@@ -3,8 +3,8 @@ package com.cloudmusic.car.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,8 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -148,12 +146,19 @@ fun HomeScreen(nav: Nav) {
         ShelfHeader("推荐歌单")
         LoadContent(recommend, Modifier.height(260.dp)) { list ->
             val tile = if (landscape) 180.dp else 218.dp
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
-                contentPadding = PaddingValues(end = 24.dp),
-            ) {
-                items(list, key = { it.id }) { p ->
-                    PlaylistTile(p, tile) { nav.open(Route.PlaylistPage(p.id, p.name, p.coverUrl)) }
+            val gap = 24.dp
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val columns = ((maxWidth.value + gap.value) / (tile.value + gap.value)).toInt().coerceAtLeast(1)
+                Column(verticalArrangement = Arrangement.spacedBy(28.dp)) {
+                    list.chunked(columns).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                            row.forEach { p ->
+                                PlaylistTile(p, tile) {
+                                    nav.open(Route.PlaylistPage(p.id, p.name, p.coverUrl))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
