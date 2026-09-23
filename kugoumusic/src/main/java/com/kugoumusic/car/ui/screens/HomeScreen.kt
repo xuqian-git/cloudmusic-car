@@ -102,7 +102,7 @@ fun HomeScreen(nav: Nav) {
         // 精选大卡
         val day = Calendar.getInstance()
         val month = "${day.get(Calendar.MONTH) + 1} 月"
-        val cardHeight = if (landscape) 244.dp else 360.dp
+        val cardHeight = if (landscape) 220.dp else 320.dp
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp), modifier = Modifier.fillMaxWidth()) {
             PickCard(
                 Modifier.weight(1f), cardHeight,

@@ -1,6 +1,5 @@
 package com.qqmusic.car.api
 
-import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -11,7 +10,7 @@ import java.util.UUID
 import kotlin.random.Random
 
 enum class QQLoginType(val label: String) {
-    MOBILE("QQ音乐"), QQ("QQ"), WECHAT("微信")
+    QQ("QQ"), WECHAT("微信")
 }
 
 enum class QQLoginState { WAITING, SCANNED, DONE, EXPIRED, REFUSED }
@@ -26,12 +25,14 @@ object QQLoginApi {
     private const val QQ_APP_ID = "716027609"
     private const val QQ_THIRD_APP_ID = "100497308"
     private const val WX_APP_ID = "wx48db31d50e334801"
+    private const val WEB_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     suspend fun create(type: QQLoginType): QQLoginQr = withContext(Dispatchers.IO) {
         when (type) {
             QQLoginType.QQ -> createQq()
             QQLoginType.WECHAT -> createWechat()
-            QQLoginType.MOBILE -> createMobile()
         }
     }
 
@@ -39,7 +40,6 @@ object QQLoginApi {
         when (qr.type) {
             QQLoginType.QQ -> checkQq(qr.identifier)
             QQLoginType.WECHAT -> checkWechat(qr.identifier)
-            QQLoginType.MOBILE -> MobileQrMqtt.await(qr.identifier)
         }
     }
 
@@ -48,7 +48,7 @@ object QQLoginApi {
             "appid" to QQ_APP_ID, "e" to "2", "l" to "M", "s" to "3", "d" to "72", "v" to "4",
             "t" to Random.nextDouble().toString(), "daid" to "383", "pt_3rd_aid" to QQ_THIRD_APP_ID,
         )
-        QQMusicClient.http.newCall(Request.Builder().url(url).header("Referer", "https://xui.ptlogin2.qq.com/").build()).execute().use { response ->
+        QQMusicClient.http.newCall(qqWebRequest(url).build()).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "获取 QQ 二维码失败")
             val qrsig = response.headers("Set-Cookie").firstNotNullOfOrNull { raw ->
                 raw.substringBefore(';').takeIf { it.startsWith("qrsig=") }?.substringAfter('=')
@@ -78,31 +78,21 @@ object QQLoginApi {
         return QQLoginQr(QQLoginType.WECHAT, image, uuid)
     }
 
-    private fun createMobile(): QQLoginQr {
-        val comm = QQMusicClient.commonParams(mapOf("ct" to 23, "cv" to 0))
-        val data = QQMusicClient.cgiBlocking(
-            "music.login.LoginServer", "CreateQRCode",
-            JSONObject().put("tmeAppID", "qqmusic").put("appVersion", "14.9.0.8").put("sdkVersion", "1.2.13.6"),
-            comm,
-        )
-        val encoded = data.optString("qrcode").substringAfter(',', "")
-        val identifier = data.optString("qrcodeID")
-        check(encoded.isNotBlank() && identifier.isNotBlank()) { "QQ音乐登录没有返回二维码" }
-        return QQLoginQr(QQLoginType.MOBILE, Base64.decode(encoded, Base64.DEFAULT), identifier)
-    }
-
     private fun checkQq(qrsig: String): QQLoginState {
         val url = "https://ssl.ptlogin2.qq.com/ptqrlogin".toHttpUrl(
-            "u1" to "https://graph.qq.com/oauth2.0/login_jump", "ptqrtoken" to QQMusicClient.hash33(qrsig).toString(),
+            "u1" to "https://graph.qq.com/oauth2.0/login_jump", "ptqrtoken" to qqQrToken(qrsig).toString(),
             "ptredirect" to "0", "h" to "1", "t" to "1", "g" to "1", "from_ui" to "1",
             "ptlang" to "2052", "action" to "0-0-${System.currentTimeMillis()}", "js_ver" to "20102616",
             "js_type" to "1", "pt_uistyle" to "40", "aid" to QQ_APP_ID, "daid" to "383",
             "pt_3rd_aid" to QQ_THIRD_APP_ID, "has_onekey" to "1",
         )
-        val text = QQMusicClient.http.newCall(
-            Request.Builder().url(url).header("Referer", "https://xui.ptlogin2.qq.com/").header("Cookie", "qrsig=$qrsig").build(),
-        ).execute().use { response -> response.body?.string().orEmpty() }
-        val args = Regex("'((?:\\\\.|[^'])*)'").findAll(Regex("ptuiCB\\((.*?)\\)").find(text)?.groupValues?.get(1).orEmpty())
+        val text = QQMusicClient.http.newCall(qqWebRequest(url).header("Cookie", "qrsig=$qrsig").build()).execute().use { response ->
+            if (!response.isSuccessful) throw ApiException(response.code, "QQ 扫码状态请求失败 (${response.code})")
+            response.body?.string().orEmpty()
+        }
+        val callback = Regex("ptuiCB\\((.*?)\\)").find(text)?.groupValues?.get(1)
+            ?: error("QQ 扫码状态响应无法解析")
+        val args = Regex("'((?:\\\\.|[^'])*)'").findAll(callback)
             .map { it.groupValues[1] }.toList()
         return when (args.firstOrNull()?.toIntOrNull()) {
             66 -> QQLoginState.WAITING
@@ -116,7 +106,7 @@ object QQLoginApi {
                 authorizeQq(uin, sigx)
                 QQLoginState.DONE
             }
-            else -> QQLoginState.WAITING
+            else -> error("QQ 扫码返回未知状态 (${args.firstOrNull().orEmpty()})")
         }
     }
 
@@ -124,7 +114,9 @@ object QQLoginApi {
         val checkUrl = "https://ssl.ptlogin2.graph.qq.com/check_sig".toHttpUrl(
             "uin" to uin, "pttype" to "1", "service" to "ptqrlogin", "nodirect" to "0", "ptsigx" to sigx,
             "s_url" to "https://graph.qq.com/oauth2.0/login_jump", "ptlang" to "2052", "ptredirect" to "100",
-            "aid" to QQ_APP_ID, "daid" to "383", "pt_login_type" to "3", "pt_3rd_aid" to QQ_THIRD_APP_ID,
+            "aid" to QQ_APP_ID, "daid" to "383", "j_later" to "0", "low_login_hour" to "0",
+            "regmaster" to "0", "pt_login_type" to "3", "pt_aid" to "0", "pt_aaid" to "16",
+            "pt_light" to "0", "pt_3rd_aid" to QQ_THIRD_APP_ID,
         )
         val noRedirect = QQMusicClient.http.newBuilder().followRedirects(false).followSslRedirects(false).build()
         val cookies = noRedirect.newCall(Request.Builder().url(checkUrl).header("Referer", "https://xui.ptlogin2.qq.com/").build())
@@ -134,15 +126,16 @@ object QQLoginApi {
             .add("response_type", "code").add("client_id", QQ_THIRD_APP_ID)
             .add("redirect_uri", "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/")
             .add("scope", "get_user_info,get_app_friends").add("state", "state").add("from_ptlogin", "1")
+            .add("switch", "").add("src", "1").add("update_auth", "1").add("openapi", "1010_1030")
             .add("g_tk", QQMusicClient.hash33(pSkey).toString()).add("auth_time", System.currentTimeMillis().toString())
             .add("ui", UUID.randomUUID().toString()).build()
         val location = noRedirect.newCall(
             Request.Builder().url("https://graph.qq.com/oauth2.0/authorize").post(body).header("Cookie", cookies.joinToString("; ")).build(),
         ).execute().use { it.header("Location").orEmpty() }
         val code = Regex("[?&]code=([^&]+)").find(location)?.groupValues?.get(1) ?: error("QQ 授权码获取失败")
-        val data = QQMusicClient.cgiBlocking(
+        val data = QQMusicClient.cgiAndroidBlocking(
             "QQConnectLogin.LoginServer", "QQLogin", JSONObject().put("code", code),
-            QQMusicClient.commonParams(mapOf("tmeLoginType" to 2)),
+            mapOf("tmeLoginType" to 2),
         )
         saveCredential(data, 2)
     }
@@ -159,10 +152,10 @@ object QQLoginApi {
             402 -> QQLoginState.EXPIRED
             403 -> QQLoginState.REFUSED
             405 -> {
-                val data = QQMusicClient.cgiBlocking(
+                val data = QQMusicClient.cgiAndroidBlocking(
                     "music.login.LoginServer", "Login",
                     JSONObject().put("code", match.groupValues[2]).put("strAppid", WX_APP_ID),
-                    QQMusicClient.commonParams(mapOf("tmeLoginType" to 1)),
+                    mapOf("tmeLoginType" to 1),
                 )
                 saveCredential(data, 1)
                 QQLoginState.DONE
@@ -180,6 +173,14 @@ object QQLoginApi {
             QQCredential(id, key, data.optString("encryptUin"), data.optInt("loginType", fallbackType), data.optString("nick"), data.optString("avatar")),
         )
     }
+
+    internal fun qqQrToken(qrsig: String): Int = QQMusicClient.hash33(qrsig, seed = 0)
+
+    private fun qqWebRequest(url: String): Request.Builder = Request.Builder()
+        .url(url)
+        .header("User-Agent", WEB_USER_AGENT)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Referer", "https://xui.ptlogin2.qq.com/")
 }
 
 private fun String.toHttpUrl(vararg params: Pair<String, String>): String = buildString {

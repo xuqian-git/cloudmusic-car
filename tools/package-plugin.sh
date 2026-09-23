@@ -5,7 +5,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROPS="$PROJECT_DIR/keystore.properties"
 CLASSES_JAR="$PROJECT_DIR/app/build/intermediates/runtime_app_classes_jar/release/bundleReleaseClassesToRuntimeJar/classes.jar"
 OUT_DIR="$PROJECT_DIR/app/build/outputs/plugin"
-OUT="$OUT_DIR/CloudMusic-v1.0.1.ppmusic"
+OUT="$OUT_DIR/CloudMusic-v1.0.3.ppmusic"
 
 property() {
   sed -n "s/^$1=//p" "$PROPS" | tail -n 1
@@ -17,7 +17,7 @@ if [ ! -f "$PROPS" ]; then
 fi
 
 cd "$PROJECT_DIR"
-./gradlew clean testReleaseUnitTest :app:bundleReleaseClassesToRuntimeJar
+./gradlew :app:clean :app:testReleaseUnitTest :app:bundleReleaseClassesToRuntimeJar
 
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cloudmusic-plugin.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT INT TERM

@@ -34,6 +34,7 @@ object QQMusicClient {
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
     private val cookieStore = ConcurrentHashMap<String, Cookie>()
     private lateinit var prefs: SharedPreferences
+    private lateinit var androidIdentity: QQAndroidIdentity
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -55,6 +56,7 @@ object QQMusicClient {
     fun init(context: Context) {
         QQRecentStore.init(context)
         prefs = context.getSharedPreferences("qqmusic_account", Context.MODE_PRIVATE)
+        androidIdentity = QQAndroidIdentity(prefs, http)
         val id = prefs.getLong("musicId", 0)
         val key = prefs.getString("musicKey", "").orEmpty()
         if (id > 0 && key.isNotBlank()) {
@@ -81,14 +83,38 @@ object QQMusicClient {
             .apply()
     }
 
+    fun updateProfile(nickname: String, avatarUrl: String) {
+        val current = credential ?: return
+        storeCredential(current.copy(nickname = nickname, avatarUrl = avatarUrl))
+    }
+
     fun clearAuthCookies() {
         credential = null
-        prefs.edit().clear().apply()
+        prefs.edit()
+            .remove("musicId").remove("musicKey").remove("encryptUin").remove("loginType")
+            .remove("nickname").remove("avatarUrl")
+            .apply()
         cookieStore.clear()
     }
 
     suspend fun cgi(module: String, method: String, param: JSONObject = JSONObject(), comm: JSONObject? = null): JSONObject =
         withContext(Dispatchers.IO) { cgiBlocking(module, method, param, comm) }
+
+    suspend fun cgiAndroid(
+        module: String,
+        method: String,
+        param: JSONObject = JSONObject(),
+        overrides: Map<String, Any?> = emptyMap(),
+    ): JSONObject = withContext(Dispatchers.IO) {
+        cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides))
+    }
+
+    fun cgiAndroidBlocking(
+        module: String,
+        method: String,
+        param: JSONObject = JSONObject(),
+        overrides: Map<String, Any?> = emptyMap(),
+    ): JSONObject = cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides))
 
     fun cgiBlocking(module: String, method: String, param: JSONObject = JSONObject(), comm: JSONObject? = null): JSONObject {
         val payload = JSONObject()

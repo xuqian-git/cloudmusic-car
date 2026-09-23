@@ -77,11 +77,16 @@ data class Playlist(
         fun parse(o: JSONObject): Playlist {
             val creator = o.optJSONObject("creator")
             val cover = o.optJSONObject("cover")
+            val directCover = listOf("picurl", "picUrl", "imgurl", "logo", "cover", "albumPicUrl", "layerUrl")
+                .firstNotNullOfOrNull { key -> o.opt(key).takeIf { it is String } as? String }
+                ?.takeIf(String::isNotBlank)
             return Playlist(
                 id = o.optLong("tid").takeIf { it != 0L } ?: o.optLong("id").takeIf { it != 0L } ?: o.optLong("dissid"),
-                name = o.optString("title").ifEmpty { o.optString("dissname").ifEmpty { o.optString("name") } },
+                name = o.optString("title").ifEmpty {
+                    o.optString("dissname").ifEmpty { o.optString("name").ifEmpty { o.optString("dirName") } }
+                },
                 coverUrl = cover?.optString("default_url")?.takeIf(String::isNotBlank)
-                    ?: o.optStringOrNull("picurl") ?: o.optStringOrNull("imgurl"),
+                    ?: directCover,
                 trackCount = o.optInt("song_cnt", o.optInt("songnum", o.optInt("song_count"))),
                 playCount = o.optLong("play_cnt").takeIf { it != 0L } ?: o.optLong("listennum"),
                 creatorId = creator?.optLong("uin") ?: o.optLong("host_uin"),

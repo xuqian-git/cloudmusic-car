@@ -16,6 +16,7 @@ import com.qqmusic.car.ui.AppRoot
 import com.qqmusic.car.ui.theme.QQMusicTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -48,6 +49,7 @@ class QQMusicPlugin {
         private var started = false
         private var session: MediaSession? = null
         private var bridgeHandle: Long? = null
+        private var lyricsBridgeJob: Job? = null
 
         @Synchronized
         fun ensureStarted(context: Context) {
@@ -66,7 +68,7 @@ class QQMusicPlugin {
                     mediaSession.platformToken,
                 )
             }
-            scope.launch {
+            lyricsBridgeJob = scope.launch {
                 PlayerHub.lyrics.collectLatest { lines ->
                     val extras = Bundle()
                     LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
@@ -81,11 +83,13 @@ class QQMusicPlugin {
         @Synchronized
         fun close() {
             if (!started) return
-            PlayerHub.player.pause()
+            lyricsBridgeJob?.cancel()
+            lyricsBridgeJob = null
             bridgeHandle?.let(HostMediaBridge::unregister)
             bridgeHandle = null
-            session?.release()
+            runCatching { session?.release() }
             session = null
+            runCatching(PlayerHub::release)
             started = false
         }
     }

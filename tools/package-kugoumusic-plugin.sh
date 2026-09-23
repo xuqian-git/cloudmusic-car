@@ -5,7 +5,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROPS="$PROJECT_DIR/keystore.properties"
 CLASSES_JAR="$PROJECT_DIR/kugoumusic/build/intermediates/runtime_app_classes_jar/release/bundleReleaseClassesToRuntimeJar/classes.jar"
 OUT_DIR="$PROJECT_DIR/kugoumusic/build/outputs/plugin"
-OUT="$OUT_DIR/KuGouMusic-v1.0.0.ppmusic"
+OUT="$OUT_DIR/KuGouMusic-v1.0.2.ppmusic"
 
 property() {
   sed -n "s/^$1=//p" "$PROPS" | tail -n 1

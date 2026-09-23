@@ -1,8 +1,12 @@
 package com.qqmusic.car.api
 
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
+import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
@@ -14,21 +18,32 @@ object QQMusicApi {
     suspend fun logout() = client.clearAuthCookies()
     suspend fun refreshLogin() = Unit
 
-    suspend fun userAccount(): Profile? = client.credential?.let {
-        Profile(it.musicId, it.nickname.ifBlank { "QQ 音乐用户" }, it.avatarUrl.ifBlank { null }, 0)
+    suspend fun userAccount(): Profile? {
+        val auth = client.credential ?: return null
+        val remote = runCatching {
+            client.cgiAndroid(
+                "music.UserInfo.userInfoServer", "GetLoginUserInfo",
+            ).let { parseProfile(it, auth.musicId) }
+        }.getOrNull()
+        if (remote != null) {
+            client.updateProfile(remote.nickname, remote.avatarUrl.orEmpty())
+            return remote
+        }
+        return Profile(auth.musicId, auth.nickname.ifBlank { "QQ 音乐用户" }, auth.avatarUrl.ifBlank { null }, 0)
     }
 
     suspend fun userPlaylists(uid: Long): List<Playlist> {
         val auth = client.credential ?: return emptyList()
-        val created = client.cgi(
+        val created = client.cgiAndroid(
             "music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", JSONObject().put("uin", uid.toString()),
         )
         val mine = findArrays(created, "v_playlist", "playlist", "list").flatMap { it.objects() }.map(Playlist::parse)
-        val favorites = client.cgi(
+        val favorites = client.cgiAndroid(
             "music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo",
             JSONObject().put("uin", auth.encryptUin).put("offset", 0).put("size", 1000),
         )
-        val saved = findArrays(favorites, "v_playlist", "playlist", "list").flatMap { it.objects() }.map(Playlist::parse)
+        val saved = findArrays(favorites, "v_list", "v_playlist", "playlist", "list")
+            .flatMap { it.objects() }.map(Playlist::parse).filter { it.id > 0 && it.name.isNotBlank() }
         val liked = Playlist(0, "我喜欢的音乐", null, 0, 0, uid, auth.nickname, 5)
         return (listOf(liked) + mine + saved).distinctBy(Playlist::id)
     }
@@ -38,7 +53,7 @@ object QQMusicApi {
     suspend fun likeTrack(id: Long, like: Boolean) {
         val track = tracks[id] ?: error("歌曲信息已失效，请重新打开列表")
         val method = if (like) "AddSonglist" else "DelSonglist"
-        client.cgi(
+        client.cgiAndroid(
             "music.musicasset.PlaylistDetailWrite", method,
             JSONObject()
                 .put("dirId", 201)
@@ -177,14 +192,29 @@ object QQMusicApi {
 
     suspend fun searchSongs(keywords: String, limit: Int = 50): List<Track> {
         val encoded = URLEncoder.encode(keywords, "UTF-8")
-        val data = client.getJson("https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&p=1&n=$limit&w=$encoded&cr=1&g_tk=5381&t=0&aggr=1&lossless=1")
+        val data = searchRequest {
+            client.getJson("https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&p=1&n=$limit&w=$encoded&cr=1&g_tk=5381&t=0&aggr=1&lossless=1")
+        }
         return register(data.optJSONObject("data")?.optJSONObject("song")?.optJSONArray("list").objects().map(Track::parse))
     }
 
     suspend fun searchPlaylists(keywords: String, limit: Int = 40): List<Playlist> {
-        val encoded = URLEncoder.encode(keywords, "UTF-8")
-        val data = client.getJson("https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&p=1&n=$limit&w=$encoded&cr=1&g_tk=5381&t=3&aggr=1")
-        return data.optJSONObject("data")?.optJSONObject("songlist")?.optJSONArray("list").objects().map(Playlist::parse)
+        val data = searchRequest {
+            client.cgiAndroid(
+                "music.search.SearchCgiService", "DoSearchForQQMusicMobile",
+                JSONObject()
+                    .put("searchid", searchId())
+                    .put("query", keywords)
+                    .put("search_type", 3)
+                    .put("num_per_page", limit)
+                    .put("page_num", 1)
+                    .put("highlight", 0)
+                    .put("grp", 1)
+                    .put("selectors", JSONObject())
+                    .put("vec_selectors", JSONArray()),
+            )
+        }
+        return parsePlaylistSearch(data)
     }
 
     suspend fun searchDefaultKeyword(): String? = "搜索歌曲、歌手、专辑或歌单"
@@ -218,7 +248,62 @@ object QQMusicApi {
         return found
     }
 
+    internal fun parsePlaylistSearch(root: JSONObject): List<Playlist> =
+        findArrays(root, "item_songlist", "songlist").flatMap { it.objects() }
+            .map(Playlist::parse).filter { it.id > 0 && it.name.isNotBlank() }.distinctBy(Playlist::id)
+
+    internal fun parseProfile(root: JSONObject, userId: Long): Profile? {
+        fun firstString(value: Any?, keys: Set<String>): String? {
+            when (value) {
+                is JSONObject -> {
+                    for (key in keys) {
+                        value.optString(key).takeIf(String::isNotBlank)?.let { return it }
+                    }
+                    value.keys().forEach { key -> firstString(value.opt(key), keys)?.let { return it } }
+                }
+                is JSONArray -> (0 until value.length()).forEach { index ->
+                    firstString(value.opt(index), keys)?.let { return it }
+                }
+            }
+            return null
+        }
+        val nickname = firstString(root, setOf("nick", "nickname", "nickName")) ?: return null
+        val avatar = firstString(root, setOf("avatar", "avatarUrl", "headPic", "pic", "logo"))
+        val vip = root.optInt("vipType", root.optInt("vip_type", 0))
+        return Profile(userId, nickname, avatar, vip)
+    }
+
     private fun deviceGuid(): String = Random.nextLong(100_000_000L, 999_999_999L).toString()
+
+    private fun searchId(): String {
+        val multiplier = Random.nextInt(1, 21).toLong() * 18_014_398_509_481_984L
+        val randomPart = Random.nextLong(0, 4_194_305L) * 4_294_967_296L
+        return (multiplier + randomPart + System.currentTimeMillis() % 86_400_000L).toString()
+    }
+
+    private suspend fun <T> searchRequest(block: suspend () -> T): T {
+        var lastFailure: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                return block()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!isTransientSearchFailure(error)) throw error
+                lastFailure = error
+                if (attempt < 2) delay(if (attempt == 0) 250 else 700)
+            }
+        }
+        throw ApiException(-2, "QQ 音乐搜索服务暂时不稳定，请点击重试").also {
+            it.initCause(lastFailure)
+        }
+    }
+
+    internal fun isTransientSearchFailure(error: Exception): Boolean = when (error) {
+        is ApiException -> error.code == -1 || error.code == 408 || error.code == 429 || error.code in 500..599
+        is IOException, is JSONException -> true
+        else -> false
+    }
 
     private fun JSONObject.toplistCoverUrl(): String? =
         optStringOrNull("frontPicUrl")

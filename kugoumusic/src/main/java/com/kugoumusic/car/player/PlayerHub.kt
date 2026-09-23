@@ -34,6 +34,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -57,7 +58,7 @@ object PlayerHub {
     private const val URL_TTL_MS = 15 * 60 * 1000L
     private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     lateinit var player: ExoPlayer
         private set
 
@@ -132,6 +133,21 @@ object PlayerHub {
                 persistPosition()
             }
         }
+    }
+
+    @Synchronized
+    fun release() {
+        if (!initialized) return
+        runCatching(::persistPosition)
+        lyricsJob?.cancel()
+        lyricsJob = null
+        scope.cancel()
+        runCatching { player.removeListener(listener) }
+        runCatching { player.release() }
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        fmLoading = false
+        _isPlaying.value = false
+        initialized = false
     }
 
     private fun restorePlayback(snapshot: PlaybackSnapshot) {

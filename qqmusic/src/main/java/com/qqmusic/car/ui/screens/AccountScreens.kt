@@ -81,7 +81,7 @@ fun LoginScreen() {
     var qr by remember { mutableStateOf<Bitmap?>(null) }
     var state by remember { mutableStateOf(QrState.LOADING) }
     var serverMessage by remember { mutableStateOf<String?>(null) }
-    var loginType by remember { mutableStateOf(QQLoginType.MOBILE) }
+    var loginType by remember { mutableStateOf(QQLoginType.QQ) }
 
     LaunchedEffect(attempt, loginType) {
         state = QrState.LOADING

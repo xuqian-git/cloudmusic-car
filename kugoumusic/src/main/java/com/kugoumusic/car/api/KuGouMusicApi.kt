@@ -16,7 +16,13 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.InflaterInputStream
 
 object KuGouMusicApi {
-    private data class RemotePlaylist(val key: String, val kind: Kind, val rankCid: Long = 0)
+    private data class RemotePlaylist(
+        val key: String,
+        val kind: Kind,
+        val rankCid: Long = 0,
+        val name: String = "歌单",
+        val coverUrl: String? = null,
+    )
     private enum class Kind { PUBLIC, USER, RANK }
 
     private val tracks = ConcurrentHashMap<Long, Track>()
@@ -53,10 +59,11 @@ object KuGouMusicApi {
         return source.mapIndexed { index, item ->
             val remote = item.stringAny("listid", "id", "global_collection_id")
             val id = item.longAny("listid", "id").takeIf { it > 0 } ?: stableId(remote)
-            playlists[id] = RemotePlaylist(remote.ifBlank { id.toString() }, Kind.USER)
             val name = item.stringAny("name", "listname", "specialname").ifBlank { "歌单" }
+            val coverUrl = item.stringAny("pic", "img", "imgurl", "cover", "cover_url").ifBlank { null }
+            playlists[id] = RemotePlaylist(remote.ifBlank { id.toString() }, Kind.USER, name = name, coverUrl = coverUrl)
             Playlist(
-                id, name, item.stringAny("pic", "imgurl", "cover", "cover_url").ifBlank { null },
+                id, name, coverUrl,
                 item.longAny("count", "song_count", "total").toInt(), item.longAny("play_count"), uid,
                 auth.nickname, if (index == likedIndex) 5 else 0,
             )
@@ -196,7 +203,7 @@ object KuGouMusicApi {
             if (remote.kind == Kind.USER) {
                 val list = loadUserPlaylistTracks(remote, maxTracks)
                 return PlaylistDetail(
-                    Playlist(id, "歌单", list.firstOrNull()?.coverUrl, list.size, 0, 0, "", 0),
+                    Playlist(id, remote.name, remote.coverUrl ?: list.firstOrNull()?.coverUrl, list.size, 0, 0, "", 0),
                     null,
                     list,
                 )
@@ -207,7 +214,11 @@ object KuGouMusicApi {
             val root = KuGouMusicClient.request("/pubsongs/v2/get_other_list_file_nofilt", params = params)
             val data = root.optJSONObject("data") ?: root
             val list = register(data.arrayAny("songs", "songlist", "info", "list").objects().map(Track::parse))
-            PlaylistDetail(Playlist(id, "歌单", list.firstOrNull()?.coverUrl, list.size, 0, 0, "", if (id == -1L) 5 else 0), null, list)
+            PlaylistDetail(
+                Playlist(id, remote.name, remote.coverUrl ?: list.firstOrNull()?.coverUrl, list.size, 0, 0, "", if (id == -1L) 5 else 0),
+                null,
+                list,
+            )
         }
     }
 
@@ -353,14 +364,18 @@ object KuGouMusicApi {
     suspend fun searchDefaultKeyword(): String? = "搜索歌曲、歌手、专辑或歌单"
 
     private fun parsePlaylists(items: List<JSONObject>, kind: Kind): List<Playlist> = items.map { item ->
-        val key = item.stringAny("global_collection_id", "listid", "specialid", "id")
+        val key = playlistRemoteKey(item)
         val id = item.longAny("listid", "specialid", "id").takeIf { it > 0 && kind == Kind.USER } ?: stableId(key)
-        playlists[id] = RemotePlaylist(key, kind)
-        Playlist(id, item.stringAny("specialname", "name", "listname", "title").ifBlank { "歌单" },
-            item.stringAny("flexible_cover", "imgurl", "pic", "cover").ifBlank { null },
+        val name = item.stringAny("specialname", "name", "listname", "title").ifBlank { "歌单" }
+        val coverUrl = item.stringAny("flexible_cover", "img", "imgurl", "pic", "cover").ifBlank { null }
+        playlists[id] = RemotePlaylist(key, kind, name = name, coverUrl = coverUrl)
+        Playlist(id, name, coverUrl,
             item.longAny("song_count", "count", "total").toInt(), item.longAny("play_count", "playcount"),
             item.longAny("suid", "userid"), item.stringAny("nickname", "username"), 0, item.stringAny("intro").ifBlank { null })
     }
+
+    internal fun playlistRemoteKey(item: JSONObject): String =
+        item.stringAny("global_collection_id", "gid", "listid", "specialid", "id")
 
     private suspend fun cloudPage(page: Int, pageSize: Int): JSONObject = withContext(Dispatchers.IO) {
         val auth = KuGouMusicClient.credential ?: error("请先登录")

@@ -55,4 +55,14 @@ class ModelsTest {
 
         assertEquals(1, KuGouMusicApi.findLikedPlaylistIndex(items))
     }
+
+    @Test
+    fun searchedPlaylistUsesGlobalCollectionGidForDetailRequests() {
+        val item = JSONObject(
+            """{"specialid":6409645,"gid":"collection_3_2132029040_287_0","img":"http://img/cover.png"}""",
+        )
+
+        assertEquals("collection_3_2132029040_287_0", KuGouMusicApi.playlistRemoteKey(item))
+        assertEquals("https://img/cover.png", item.stringAny("img").sized(300))
+    }
 }
