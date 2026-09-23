@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 完整方形主图交给系统裁切，避免不同车机启动器二次放大前景。 -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/ic_cloudmusic_app"
+    android:gravity="fill"
+    android:filter="true" />
