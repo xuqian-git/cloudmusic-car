@@ -12,5 +12,7 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "CloudMusic"
+rootProject.name = "PaopaoMusicPacks"
 include(":app")
+include(":qqmusic")
+include(":kugoumusic")

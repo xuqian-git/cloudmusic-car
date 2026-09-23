@@ -1,4 +1,4 @@
-package com.cloudmusic.car.plugin
+package com.kugoumusic.car.plugin
 
 import android.content.Context
 import android.os.Bundle
@@ -6,14 +6,14 @@ import android.view.View
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.media3.session.MediaSession
-import com.cloudmusic.car.api.LyricsParser
-import com.cloudmusic.car.api.NeteaseClient
-import com.cloudmusic.car.data.AccountStore
-import com.cloudmusic.car.data.MusicCache
-import com.cloudmusic.car.data.Settings
-import com.cloudmusic.car.player.PlayerHub
-import com.cloudmusic.car.ui.AppRoot
-import com.cloudmusic.car.ui.theme.CloudMusicTheme
+import com.kugoumusic.car.api.LyricsParser
+import com.kugoumusic.car.api.KuGouMusicClient
+import com.kugoumusic.car.data.AccountStore
+import com.kugoumusic.car.data.MusicCache
+import com.kugoumusic.car.data.Settings
+import com.kugoumusic.car.player.PlayerHub
+import com.kugoumusic.car.ui.AppRoot
+import com.kugoumusic.car.ui.theme.KuGouMusicTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /** Entry loaded by Paopao Desktop from a signed .ppmusic pack. */
-class CloudMusicPlugin {
+class KuGouMusicPlugin {
     fun close() = Runtime.close()
 
     fun createView(context: Context): View {
@@ -29,7 +29,7 @@ class CloudMusicPlugin {
         return ComposeView(context).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
-                CloudMusicTheme { AppRoot(embedded = true) }
+                KuGouMusicTheme { AppRoot(embedded = true) }
             }
         }
     }
@@ -52,17 +52,17 @@ class CloudMusicPlugin {
         @Synchronized
         fun ensureStarted(context: Context) {
             if (started) return
-            NeteaseClient.init(context)
+            KuGouMusicClient.init(context)
             Settings.init(context)
             MusicCache.init(context)
             AccountStore.init()
             PlayerHub.init(context)
             session = MediaSession.Builder(context, PlayerHub.player)
-                .setId("paopao.cloudmusic")
+                .setId("paopao.kugoumusic")
                 .build()
                 .also { mediaSession ->
                 bridgeHandle = HostMediaBridge.register(
-                    "com.carhome.music.plugin.cloudmusic",
+                    "com.carhome.music.plugin.kugoumusic",
                     mediaSession.platformToken,
                 )
             }

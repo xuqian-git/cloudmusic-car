@@ -1,4 +1,4 @@
-package com.cloudmusic.car.plugin
+package com.qqmusic.car.plugin
 
 import android.content.Context
 import android.os.Bundle
@@ -6,14 +6,14 @@ import android.view.View
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.media3.session.MediaSession
-import com.cloudmusic.car.api.LyricsParser
-import com.cloudmusic.car.api.NeteaseClient
-import com.cloudmusic.car.data.AccountStore
-import com.cloudmusic.car.data.MusicCache
-import com.cloudmusic.car.data.Settings
-import com.cloudmusic.car.player.PlayerHub
-import com.cloudmusic.car.ui.AppRoot
-import com.cloudmusic.car.ui.theme.CloudMusicTheme
+import com.qqmusic.car.api.LyricsParser
+import com.qqmusic.car.api.QQMusicClient
+import com.qqmusic.car.data.AccountStore
+import com.qqmusic.car.data.MusicCache
+import com.qqmusic.car.data.Settings
+import com.qqmusic.car.player.PlayerHub
+import com.qqmusic.car.ui.AppRoot
+import com.qqmusic.car.ui.theme.QQMusicTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /** Entry loaded by Paopao Desktop from a signed .ppmusic pack. */
-class CloudMusicPlugin {
+class QQMusicPlugin {
     fun close() = Runtime.close()
 
     fun createView(context: Context): View {
@@ -29,7 +29,7 @@ class CloudMusicPlugin {
         return ComposeView(context).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
-                CloudMusicTheme { AppRoot(embedded = true) }
+                QQMusicTheme { AppRoot(embedded = true) }
             }
         }
     }
@@ -52,17 +52,17 @@ class CloudMusicPlugin {
         @Synchronized
         fun ensureStarted(context: Context) {
             if (started) return
-            NeteaseClient.init(context)
+            QQMusicClient.init(context)
             Settings.init(context)
             MusicCache.init(context)
             AccountStore.init()
             PlayerHub.init(context)
             session = MediaSession.Builder(context, PlayerHub.player)
-                .setId("paopao.cloudmusic")
+                .setId("paopao.qqmusic")
                 .build()
                 .also { mediaSession ->
                 bridgeHandle = HostMediaBridge.register(
-                    "com.carhome.music.plugin.cloudmusic",
+                    "com.carhome.music.plugin.qqmusic",
                     mediaSession.platformToken,
                 )
             }

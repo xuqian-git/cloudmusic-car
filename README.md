@@ -41,3 +41,26 @@ Android APK，没有 Activity、桌面图标或独立进程入口，只能由跑
 
 产物位于 `app/build/outputs/plugin/CloudMusic-v1.0.0.ppmusic`。功能包继续使用现有云音乐
 Compose 界面，桌面只提供窗格、生命周期与通用音乐运行库。
+
+## QQ 音乐功能包
+
+同一仓库的 `qqmusic` 模块提供独立的 QQ 音乐功能包。它沿用相同的自适应车机界面、
+播放队列恢复和音频/图片/歌词缓存，但账号、设置、队列与缓存目录均和云音乐隔离。
+接口按 QQ 音乐公开网络行为独立实现，支持 QQ音乐、QQ、微信三种二维码登录。
+
+```bash
+./tools/package-qqmusic-plugin.sh
+```
+
+产物位于 `qqmusic/build/outputs/plugin/QQMusic-v1.0.0.ppmusic`。
+
+## 酷狗音乐功能包
+
+`kugoumusic` 模块提供独立的酷狗音乐功能包，沿用相同的自适应车机界面、播放恢复与缓存，
+支持酷狗、QQ、微信扫码登录，并使用酷狗的真实音乐云盘接口。
+
+```bash
+./tools/package-kugoumusic-plugin.sh
+```
+
+产物位于 `kugoumusic/build/outputs/plugin/KuGouMusic-v1.0.0.ppmusic`。
