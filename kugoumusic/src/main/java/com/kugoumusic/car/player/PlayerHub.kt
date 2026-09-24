@@ -158,7 +158,7 @@ object PlayerHub {
         _sourceName.value = snapshot.sourceName
         player.setMediaItems(snapshot.tracks.map(::mediaItem), snapshot.currentIndex, snapshot.positionMs)
         player.shuffleModeEnabled = snapshot.shuffle
-        player.repeatMode = snapshot.repeatMode
+        player.repeatMode = if (snapshot.mode.endless) Player.REPEAT_MODE_OFF else snapshot.repeatMode
         player.prepare()
         player.pause()
     }
@@ -256,7 +256,7 @@ object PlayerHub {
         _sourceName.value = source
         consecutiveFailures = 0
         player.shuffleModeEnabled = shuffle
-        player.repeatMode = if (mode == PlayMode.FM) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
+        player.repeatMode = if (mode.endless) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
         player.setMediaItems(playable.map(::mediaItem), startIndex, 0)
         persistQueue(playable, startIndex)
         player.prepare()
@@ -272,17 +272,33 @@ object PlayerHub {
     }
 
     fun startHeartbeat() {
-        val liked = AccountStore.likedPlaylist
-        val seed = AccountStore.likedIds.value.randomOrNull()
-        if (liked == null || seed == null) {
+        if (AccountStore.likedPlaylist == null || AccountStore.likedIds.value.isEmpty()) {
             toast("先去红心几首歌，才能开启心动模式")
             return
         }
         scope.launch {
-            runCatching { KuGouMusicApi.intelligenceList(seed, liked.id) }
-                .onSuccess { play(it, source = "心动模式", sourceId = liked.id, mode = PlayMode.HEARTBEAT) }
-                .onFailure { toast(it.message ?: "心动模式加载失败") }
+            // 接口一次只给几首，开场先凑够一屏，后面快放完时再续
+            val first = mutableListOf<Track>()
+            var failure: Throwable? = null
+            repeat(HEARTBEAT_MAX_BATCHES) {
+                if (first.size >= HEARTBEAT_MIN_TRACKS) return@repeat
+                runCatching { heartbeatBatch() }
+                    .onSuccess { batch -> batch.filterTo(first) { track -> first.none { it.id == track.id } } }
+                    .onFailure { failure = it }
+            }
+            if (first.isNotEmpty()) {
+                play(first, source = "心动模式", sourceId = AccountStore.likedPlaylist?.id ?: 0, mode = PlayMode.HEARTBEAT)
+            } else {
+                toast(failure?.message ?: "心动模式加载失败")
+            }
         }
+    }
+
+    /** 每批换一首红心歌当种子，续出来的歌不会总围着同一首转。 */
+    private suspend fun heartbeatBatch(): List<Track> {
+        val liked = AccountStore.likedPlaylist ?: return emptyList()
+        val seed = AccountStore.likedIds.value.randomOrNull() ?: return emptyList()
+        return KuGouMusicApi.intelligenceList(seed, liked.id)
     }
 
     // ---------- 控制 ----------
@@ -297,7 +313,7 @@ object PlayerHub {
     }
 
     fun next() {
-        if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (_mode.value == PlayMode.FM) extendFm(true)
+        if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (_mode.value.endless) extendFm(true)
     }
 
     fun previous() = player.seekToPrevious()
@@ -331,10 +347,12 @@ object PlayerHub {
     private fun extendFm(skipAfter: Boolean) {
         if (fmLoading) return
         fmLoading = true
+        val mode = _mode.value
         scope.launch {
-            val more = runCatching { KuGouMusicApi.personalFm() }.getOrDefault(emptyList())
+            val more = runCatching { if (mode == PlayMode.HEARTBEAT) heartbeatBatch() else KuGouMusicApi.personalFm() }
+                .getOrDefault(emptyList())
                 .filter { AccountStore.unplayableReason(it) == null && it.id !in currentIds() }
-            if (more.isNotEmpty() && _mode.value == PlayMode.FM) {
+            if (more.isNotEmpty() && _mode.value == mode) {
                 player.addMediaItems(more.map(::mediaItem))
                 persistQueue()
                 if (skipAfter) player.seekToNextMediaItem()
@@ -419,7 +437,7 @@ object PlayerHub {
                 }
             }
         }
-        if (_mode.value == PlayMode.FM && player.mediaItemCount - player.currentMediaItemIndex <= 2) {
+        if (_mode.value.endless && player.mediaItemCount - player.currentMediaItemIndex <= 2) {
             extendFm(false)
         }
     }
@@ -479,7 +497,7 @@ object PlayerHub {
                     player.prepare()
                     player.play()
                 }
-                _mode.value == PlayMode.FM -> {
+                _mode.value.endless -> {
                     player.prepare()
                     extendFm(true)
                 }
@@ -487,3 +505,9 @@ object PlayerHub {
         }
     }
 }
+
+/** 私人 FM 和心动模式都是边放边续的电台，不循环、快放完时自动往后接。 */
+private val PlayMode.endless: Boolean get() = this == PlayMode.FM || this == PlayMode.HEARTBEAT
+
+private const val HEARTBEAT_MIN_TRACKS = 15
+private const val HEARTBEAT_MAX_BATCHES = 4
