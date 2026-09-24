@@ -198,6 +198,8 @@ object PlayerHub {
         val url = result.url ?: throw IOException("no url for $id")
         if (result.isTrial) toast("《${tracks[id]?.name.orEmpty()}》为 VIP 歌曲，当前为试听片段")
         val cacheKey = "song-$id-${quality.level}"
+        // 存储快满先删最久没听的；真写不进去时缓存层会自动改走网络，不会跳歌
+        MusicCache.ensureDiskRoom(cacheKey)
         urlCache[requestKey] = ResolvedUrl(url, System.currentTimeMillis(), cacheKey)
         return spec.buildUpon()
             .setUri(Uri.parse(url))

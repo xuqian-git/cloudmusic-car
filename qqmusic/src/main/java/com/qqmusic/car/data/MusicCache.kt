@@ -33,6 +33,8 @@ data class MusicCacheStats(
 object MusicCache {
     private const val AUDIO_MAX_BYTES = 5L * 1024 * 1024 * 1024
     private const val IMAGE_MAX_BYTES = 256L * 1024 * 1024
+    private const val LOW_SPACE_BYTES = 1L * 1024 * 1024 * 1024
+    private const val TARGET_FREE_BYTES = 2L * 1024 * 1024 * 1024
 
     private lateinit var root: File
     private lateinit var lyricDir: File
@@ -67,6 +69,27 @@ object MusicCache {
             .crossfade(true)
             .build()
         initialized = true
+        _stats.value = snapshot()
+    }
+
+    /**
+     * 车机存储快满时的保护，每首歌开始加载前在加载线程调用：剩余空间不到 1GB 就从最久没听的整首删，
+     * 删到剩 2GB 为止（正要放的这首不删）。
+     */
+    @Synchronized
+    fun ensureDiskRoom(keepKey: String?) {
+        if (!initialized) return
+        val dir = File(root, "audio")
+        if (dir.usableSpace >= LOW_SPACE_BYTES) return
+        val oldestFirst = runCatching {
+            audio.keys.toList()
+                .map { key -> key to (audio.getCachedSpans(key).maxOfOrNull { it.lastTouchTimestamp } ?: 0L) }
+                .sortedBy { it.second }
+        }.getOrDefault(emptyList())
+        for ((key, _) in oldestFirst) {
+            if (dir.usableSpace >= TARGET_FREE_BYTES) break
+            if (key != keepKey) runCatching { audio.removeResource(key) }
+        }
         _stats.value = snapshot()
     }
 
