@@ -70,6 +70,17 @@ object MusicCache {
         _stats.value = snapshot()
     }
 
+    /**
+     * 功能包卸载/升级时由运行时调用。SimpleCache 的目录锁记在桌面进程共享的类上，
+     * 不释放的话同一进程里新装的包再开这个目录会直接失败。
+     */
+    @Synchronized
+    fun close() {
+        if (!initialized) return
+        runCatching { audio.release() }
+        initialized = false
+    }
+
     fun imageLoader(context: Context): ImageLoader {
         init(context)
         return artworkLoader

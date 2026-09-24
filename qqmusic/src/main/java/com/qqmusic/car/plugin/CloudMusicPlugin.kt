@@ -90,6 +90,7 @@ class QQMusicPlugin {
             runCatching { session?.release() }
             session = null
             runCatching(PlayerHub::release)
+            MusicCache.close()
             started = false
         }
     }
