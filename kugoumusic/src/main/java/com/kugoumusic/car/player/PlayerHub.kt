@@ -122,6 +122,8 @@ object PlayerHub {
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
+            // 「上一首」永远切到上一首，不按默认规则放过 3 秒就改成从头重放；桌面底栏、方向盘走的也是它。
+            .setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
             .build()
         player.repeatMode = Player.REPEAT_MODE_ALL
         player.addListener(listener)

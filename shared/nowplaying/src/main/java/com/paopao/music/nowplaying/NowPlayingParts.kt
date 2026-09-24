@@ -62,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -629,7 +630,11 @@ internal fun QueuePanel(source: NowPlayingSource, accent: Color, g: Grid, width:
     val queue by source.queue.collectAsState()
     val current by source.current.collectAsState()
     val currentPos = queue.indexOfFirst { it.track.id == current?.id }.coerceAtLeast(0)
-    val upcoming = queue.drop(currentPos)
+    // 整张队列都列出来：放过的留在上面变淡、点了能回去；打开时停在正在放的那首，前面露一首。
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (currentPos - 1).coerceAtLeast(0))
+    LaunchedEffect(currentPos) {
+        if (!listState.isScrollInProgress) listState.animateScrollToItem((currentPos - 1).coerceAtLeast(0))
+    }
     Column(
         modifier
             .width(width)
@@ -642,13 +647,14 @@ internal fun QueuePanel(source: NowPlayingSource, accent: Color, g: Grid, width:
             IconButton(Icons.Rounded.Close, g, 3.4f, 6.2f, contentDescription = "关闭", onClick = onClose)
         }
         Spacer(Modifier.height(g(1f)))
-        LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(upcoming, key = { _, it -> it.index }) { i, item ->
-                val playing = i == 0
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
+            itemsIndexed(queue, key = { _, it -> it.index }) { i, item ->
+                val playing = i == currentPos
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .height(g(8.8f))
+                        .alpha(if (i < currentPos) 0.45f else 1f)
                         .background(if (playing) Color.White.copy(alpha = 0.1f) else Color.Transparent, RoundedCornerShape(g(1.4f)))
                         .pressable { source.jumpTo(item.index) }
                         .padding(horizontal = g(1f)),
