@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -59,6 +60,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -98,6 +100,7 @@ import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlin.math.floor
 
@@ -454,7 +457,7 @@ internal fun LyricsList(
     LaunchedEffect(active, manualTick, lines) {
         val wait = 2500 - (System.currentTimeMillis() - manualAt)
         if (wait > 0) delay(wait)
-        if (active >= 0 && !state.isScrollInProgress) state.animateScrollToItem(active)
+        if (active >= 0 && !state.isScrollInProgress) state.followLine(active)
     }
 
     BoxWithConstraints(modifier) {
@@ -489,7 +492,6 @@ internal fun LyricsList(
                 LyricRow(
                     line = line,
                     isActive = i == active,
-                    distance = if (active < 0) i + 1 else abs(i - active),
                     clock = clock,
                     g = g,
                     textSize = textSize,
@@ -507,11 +509,39 @@ internal fun LyricsList(
     }
 }
 
+/**
+ * 把第 [index] 句平滑地送到锚点。换句时上一句在缩、这一句在放大，行高一直在变，
+ * 一次算好终点的 animateScrollToItem 会在最后补一下位置，看着像顿了一下；
+ * 这里每帧按实际位置追剩下距离的一截，行高怎么变都跟得上，收尾没有跳变。
+ */
+private suspend fun LazyListState.followLine(index: Int) {
+    // 离得远（手动翻走过）先用自带动画带回视野，再接着追
+    if (layoutInfo.visibleItemsInfo.none { it.index == index }) animateScrollToItem(index)
+    scroll {
+        val start = withFrameNanos { it }
+        var last = start
+        while (true) {
+            val now = withFrameNanos { it }
+            val dt = (now - last) / 1_000_000_000f
+            last = now
+            val remaining = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.offset?.toFloat() ?: return@scroll
+            // 行的缩放动画 450ms，过了它且已贴住锚点才收手
+            if (abs(remaining) < 0.5f && now - start > LYRIC_SETTLE_NS) {
+                scrollBy(remaining)
+                return@scroll
+            }
+            scrollBy(remaining * (1f - exp(-dt / LYRIC_FOLLOW_TAU_S)))
+        }
+    }
+}
+
+private const val LYRIC_FOLLOW_TAU_S = 0.12f
+private const val LYRIC_SETTLE_NS = 480_000_000L
+
 @Composable
 private fun LyricRow(
     line: NowPlayingLyric,
     isActive: Boolean,
-    distance: Int,
     clock: PlaybackClock,
     g: Grid,
     textSize: Float,
