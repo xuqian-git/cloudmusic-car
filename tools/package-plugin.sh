@@ -5,7 +5,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROPS="$PROJECT_DIR/keystore.properties"
 CLASSES_JAR="$PROJECT_DIR/app/build/intermediates/runtime_app_classes_jar/release/bundleReleaseClassesToRuntimeJar/classes.jar"
 OUT_DIR="$PROJECT_DIR/app/build/outputs/plugin"
-OUT="$OUT_DIR/CloudMusic-v1.0.3.ppmusic"
+OUT="$OUT_DIR/CloudMusic-v1.0.4.ppmusic"
 
 property() {
   sed -n "s/^$1=//p" "$PROPS" | tail -n 1
@@ -18,6 +18,14 @@ fi
 
 cd "$PROJECT_DIR"
 ./gradlew :app:clean :app:testReleaseUnitTest :app:bundleReleaseClassesToRuntimeJar
+
+# 功能包只能调用跑跑桌面正式版保留下来的共享库类；清单不全时正式版桌面会直接崩
+HOST_RULES="${CARHOME_HOST_RULES:-$HOME/project/CarHome/carhome-app/app/proguard-rules.pro}"
+if [ -f "$HOST_RULES" ]; then
+  python3 "$PROJECT_DIR/tools/check-host-abi.py" --rules "$HOST_RULES" "$CLASSES_JAR"
+else
+  echo "Warning: $HOST_RULES not found; skipped host ABI check." >&2
+fi
 
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cloudmusic-plugin.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT INT TERM

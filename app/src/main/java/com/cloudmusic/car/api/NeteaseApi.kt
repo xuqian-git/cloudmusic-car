@@ -1,5 +1,6 @@
 package com.cloudmusic.car.api
 
+import com.paopao.music.nowplaying.WordLyricsParser
 import com.cloudmusic.car.api.NeteaseClient.checked
 import org.json.JSONArray
 import org.json.JSONObject
@@ -159,10 +160,21 @@ object NeteaseApi {
     }
 
     suspend fun lyric(id: Long): List<LyricLine> {
-        val resp = client.weapi("/song/lyric", json("id" to id, "lv" to -1, "kv" to -1, "tv" to -1, "rv" to -1))
+        // 新版接口带 YRC 逐字歌词；失败时退回老接口的逐行歌词
+        val v1 = runCatching {
+            client.eapi("/song/lyric/v1", json("id" to id, "cp" to false, "lv" to 0, "tv" to 0, "rv" to 0, "kv" to 0, "yv" to 0, "ytv" to 0, "yrv" to 0))
+        }.getOrNull()?.takeIf { it.optJSONObject("lrc") != null || it.optJSONObject("yrc") != null }
+        val resp = v1 ?: client.weapi("/song/lyric", json("id" to id, "lv" to -1, "kv" to -1, "tv" to -1, "rv" to -1))
         val lrc = resp.optJSONObject("lrc")?.optString("lyric").orEmpty()
         val tlyric = resp.optJSONObject("tlyric")?.optString("lyric").orEmpty()
-        return LyricsParser.merge(lrc, tlyric)
+        val lines = LyricsParser.merge(lrc, tlyric)
+        val yrc = WordLyricsParser.parseYrc(resp.optJSONObject("yrc")?.optString("lyric").orEmpty())
+        return WordLyricsParser.attach(
+            lines, yrc,
+            timeOf = { it.timeMs },
+            withWords = { line, w -> line.copy(words = w.words) },
+            create = { LyricLine(it.timeMs, it.text, null, it.words) },
+        ) ?: lines
     }
 
     /** 写入"最近播放"（startplay）与听歌排行（play）。 */

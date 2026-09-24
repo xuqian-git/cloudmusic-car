@@ -1,8 +1,8 @@
 {
   "id": "kugoumusic",
   "name": "酷狗音乐",
-  "versionCode": 3,
-  "versionName": "1.0.2",
+  "versionCode": 4,
+  "versionName": "1.0.3",
   "entryClass": "com.kugoumusic.car.plugin.KuGouMusicPlugin",
-  "minHostApi": 1
+  "minHostApi": 2
 }

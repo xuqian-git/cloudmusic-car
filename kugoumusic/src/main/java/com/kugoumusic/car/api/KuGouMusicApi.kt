@@ -1,5 +1,6 @@
 package com.kugoumusic.car.api
 
+import com.paopao.music.nowplaying.WordLyricsParser
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -322,11 +323,20 @@ object KuGouMusicApi {
             ?: search(mapOf("keyword" to "${track.artistNames} - ${track.name}", "duration" to track.durationMs / 1000))
                 ?.arrayAny("candidates", "data")?.optJSONObject(0)
             ?: return emptyList()
-        val downloaded = KuGouMusicClient.request(
+        suspend fun download(fmt: String): JSONObject = KuGouMusicClient.request(
             "/download", params = mapOf("ver" to 1, "client" to "android", "id" to candidate.stringAny("id"),
-                "accesskey" to candidate.stringAny("accesskey"), "fmt" to "lrc", "charset" to "utf8"),
+                "accesskey" to candidate.stringAny("accesskey"), "fmt" to fmt, "charset" to "utf8"),
             baseUrl = "https://lyrics.kugou.com", signType = SignType.ANDROID, clearDefaults = true,
         )
+        // 优先 KRC 逐字歌词；拿不到或解析不出再退回逐行 LRC
+        val krc = runCatching { WordLyricsParser.parseKrc(decodeLyricContent(download("krc"))) }
+            .onFailure { Log.w("KuGouMusic", "KRC lyrics unavailable", it) }
+            .getOrDefault(emptyList())
+        if (krc.isNotEmpty()) {
+            Log.i("KuGouMusic", "Lyrics decoded: krc lines=${krc.size}")
+            return krc.map { LyricLine(it.timeMs, it.text, null, it.words) }
+        }
+        val downloaded = download("lrc")
         val lrc = decodeLyricContent(downloaded)
         Log.i(
             "KuGouMusic",

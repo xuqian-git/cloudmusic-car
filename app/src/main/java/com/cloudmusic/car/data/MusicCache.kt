@@ -1,5 +1,6 @@
 package com.cloudmusic.car.data
 
+import com.paopao.music.nowplaying.LyricWord
 import android.content.Context
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
@@ -75,7 +76,7 @@ object MusicCache {
     }
 
     fun readLyrics(trackId: Long): List<LyricLine>? = runCatching {
-        val array = JSONArray(File(lyricDir, "$trackId.json").readText())
+        val array = JSONArray(File(lyricDir, "$trackId.v2.json").readText())
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
@@ -84,6 +85,7 @@ object MusicCache {
                         timeMs = item.getLong("time"),
                         text = item.getString("text"),
                         translation = item.optString("translation").takeIf { it.isNotEmpty() },
+                        words = item.optJSONArray("words").toLyricWords(),
                     ),
                 )
             }
@@ -92,7 +94,7 @@ object MusicCache {
 
     fun writeLyrics(trackId: Long, lines: List<LyricLine>) {
         if (lines.isEmpty()) return
-        val target = File(lyricDir, "$trackId.json")
+        val target = File(lyricDir, "$trackId.v2.json")
         val temp = File(lyricDir, "$trackId.tmp")
         val array = JSONArray().apply {
             lines.forEach { line ->
@@ -100,7 +102,8 @@ object MusicCache {
                     JSONObject()
                         .put("time", line.timeMs)
                         .put("text", line.text)
-                        .put("translation", line.translation.orEmpty()),
+                        .put("translation", line.translation.orEmpty())
+                        .apply { if (line.words.isNotEmpty()) put("words", line.words.toJson()) },
                 )
             }
         }
@@ -142,4 +145,17 @@ private fun File.sizeOnDisk(): Long = when {
     isFile -> length()
     isDirectory -> listFiles().orEmpty().sumOf(File::sizeOnDisk)
     else -> 0L
+}
+
+/** 逐字片段存成 [文本, 起点, 终点] 三元组，省空间。 */
+private fun List<LyricWord>.toJson(): JSONArray = JSONArray().apply {
+    forEach { put(JSONArray().put(it.text).put(it.startMs).put(it.endMs)) }
+}
+
+private fun JSONArray?.toLyricWords(): List<LyricWord> {
+    if (this == null) return emptyList()
+    return (0 until length()).mapNotNull { i ->
+        val w = optJSONArray(i) ?: return@mapNotNull null
+        LyricWord(w.optString(0), w.optLong(1), w.optLong(2)).takeIf { it.text.isNotEmpty() }
+    }
 }

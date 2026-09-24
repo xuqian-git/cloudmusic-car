@@ -1,5 +1,6 @@
 package com.cloudmusic.car.api
 
+import com.paopao.music.nowplaying.LyricWord
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -104,7 +105,13 @@ data class Playlist(
 
 data class Profile(val userId: Long, val nickname: String, val avatarUrl: String?, val vipType: Int)
 
-data class LyricLine(val timeMs: Long, val text: String, val translation: String?)
+data class LyricLine(
+    val timeMs: Long,
+    val text: String,
+    val translation: String?,
+    /** 逐字片段；源没有逐字数据时为空。 */
+    val words: List<LyricWord> = emptyList(),
+)
 
 // ---------- JSON helpers ----------
 

@@ -64,7 +64,7 @@ class CloudMusicPlugin {
                 .build()
                 .also { mediaSession ->
                 bridgeHandle = HostMediaBridge.register(
-                    "com.carhome.music.plugin.cloudmusic",
+                    "com.carhome.music.plugin.netease",
                     mediaSession.platformToken,
                 )
             }
