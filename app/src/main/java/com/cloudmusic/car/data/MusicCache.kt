@@ -31,7 +31,7 @@ data class MusicCacheStats(
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @kotlin.OptIn(ExperimentalCoilApi::class)
 object MusicCache {
-    private const val AUDIO_MAX_BYTES = 2L * 1024 * 1024 * 1024
+    private const val AUDIO_MAX_BYTES = 5L * 1024 * 1024 * 1024
     private const val IMAGE_MAX_BYTES = 256L * 1024 * 1024
 
     private lateinit var root: File
