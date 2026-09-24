@@ -41,6 +41,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -81,6 +82,7 @@ fun SearchScreen(nav: Nav) {
     var tab by remember { mutableStateOf(SearchMemory.tab) }
     var hint by remember { mutableStateOf("歌曲、歌手、歌单") }
     val keyboard = LocalSoftwareKeyboardController.current
+    val hostView = LocalView.current
     val focus = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -96,6 +98,8 @@ fun SearchScreen(nav: Nav) {
         SearchMemory.input = q
         SearchMemory.submitted = q
         keyboard?.hide()
+        // 桌面分屏里键盘由桌面代管，只认输入框失焦；FocusManager 不在桌面共享库清单里，走 View。
+        hostView.clearFocus()
     }
 
     Column(
