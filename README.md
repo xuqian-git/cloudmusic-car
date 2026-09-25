@@ -64,3 +64,7 @@ Compose 界面，桌面只提供窗格、生命周期与通用音乐运行库。
 ```
 
 产物位于 `kugoumusic/build/outputs/plugin/KuGouMusic-v1.0.0.ppmusic`。
+
+## 许可证
+
+本项目以 GNU LGPL-3.0 发布。许可证正文见 [`LICENSE`](LICENSE)，其引用的 GNU GPL-3.0 条款见 [`COPYING.GPL`](COPYING.GPL)。
