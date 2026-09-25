@@ -245,7 +245,7 @@ object KuGouMusicApi {
             if (chunk.size < pageSize) break
             page++
         }
-        return register(result.distinctBy(Track::id))
+        return register(result.distinctBy(Track::id)).asReversed()
     }
 
     private suspend fun rankDetail(id: Long, remote: RemotePlaylist, maxTracks: Int): PlaylistDetail {
