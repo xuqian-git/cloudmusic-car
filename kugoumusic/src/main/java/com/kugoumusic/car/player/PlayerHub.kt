@@ -1,6 +1,9 @@
 package com.kugoumusic.car.player
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -48,12 +51,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 enum class PlayMode { NORMAL, FM, HEARTBEAT }
 
+data class PlaybackNotice(val kind: String, val text: String)
+
 /**
  * 全局播放器。队列直接交给 ExoPlayer（通知栏、方向盘按键的上一首/下一首因此天然可用），
  * 每首歌以 `kugoumusic://song/<id>` 占位，真正加载时才通过 [ResolvingDataSource] 换成酷狗音乐的播放地址。
  */
 @OptIn(UnstableApi::class)
 object PlayerHub {
+    private class UnplayableTrackException(id: Long) : IOException("no url for $id")
+
     private const val SCHEME = "kugoumusic"
     private const val URL_TTL_MS = 15 * 60 * 1000L
     private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
@@ -92,6 +99,9 @@ object PlayerHub {
     private val _lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
     val lyrics: StateFlow<List<LyricLine>> = _lyrics.asStateFlow()
 
+    private val _status = MutableStateFlow<PlaybackNotice?>(null)
+    val status: StateFlow<PlaybackNotice?> = _status.asStateFlow()
+
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
 
@@ -99,6 +109,14 @@ object PlayerHub {
     private var lyricsJob: Job? = null
     private var fmLoading = false
     private var consecutiveFailures = 0
+    private var connectivity: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var waitingMediaId: String? = null
+    private var waitingPosition = 0L
+    private var waitingForRecovery = false
+    private var progressMediaId: String? = null
+    private var progressPosition = 0L
+    private var continuousPlaybackMs = 0L
     private var lastTrack: Track? = null
     private var initialized = false
 
@@ -106,6 +124,7 @@ object PlayerHub {
     fun init(context: Context) {
         if (initialized) return
         initialized = true
+        connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         MusicCache.init(context)
         val http = OkHttpDataSource.Factory(KuGouMusicClient.http)
         val upstream = DefaultDataSource.Factory(context, http)
@@ -132,6 +151,7 @@ object PlayerHub {
         scope.launch {
             while (true) {
                 delay(5_000)
+                updatePlaybackProgress()
                 persistPosition()
             }
         }
@@ -140,6 +160,9 @@ object PlayerHub {
     @Synchronized
     fun release() {
         if (!initialized) return
+        cancelNetworkWait()
+        _status.value = null
+        connectivity = null
         runCatching(::persistPosition)
         lyricsJob?.cancel()
         lyricsJob = null
@@ -195,7 +218,7 @@ object PlayerHub {
             quality = fallback
             result = KuGouMusicApi.songUrlBlocking(id, quality.level)
         }
-        val url = result.url ?: throw IOException("no url for $id")
+        val url = result.url ?: throw UnplayableTrackException(id)
         if (result.isTrial) toast("《${tracks[id]?.name.orEmpty()}》为 VIP 歌曲，当前为试听片段")
         val cacheKey = "song-$id-${quality.level}"
         // 存储快满先删最久没听的；真写不进去时缓存层会自动改走网络，不会跳歌
@@ -254,6 +277,8 @@ object PlayerHub {
             else -> 0
         }
         this.sourceId = sourceId
+        cancelNetworkWait()
+        _status.value = null
         _mode.value = mode
         _sourceName.value = source
         consecutiveFailures = 0
@@ -306,32 +331,49 @@ object PlayerHub {
     // ---------- 控制 ----------
 
     fun togglePlay() {
+        if (waitingMediaId != null) cancelNetworkWait()
         if (player.isPlaying) {
             player.pause()
         } else {
+            consecutiveFailures = 0
+            _status.value = null
             if (player.playbackState == Player.STATE_IDLE) player.prepare()
             player.play()
         }
     }
 
     fun next() {
+        cancelNetworkWait()
+        _status.value = null
         if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (_mode.value.endless) extendFm(true)
     }
 
-    fun previous() = player.seekToPrevious()
+    fun previous() {
+        cancelNetworkWait()
+        _status.value = null
+        player.seekToPrevious()
+    }
 
-    fun seekTo(ms: Long) = player.seekTo(ms)
+    fun seekTo(ms: Long) {
+        cancelNetworkWait()
+        player.seekTo(ms)
+    }
 
     fun jumpTo(index: Int) {
+        cancelNetworkWait()
+        _status.value = null
+        consecutiveFailures = 0
         player.seekTo(index, 0)
         player.play()
     }
 
     fun toggleShuffle() {
+        cancelNetworkWait()
         player.shuffleModeEnabled = !player.shuffleModeEnabled
     }
 
     fun cycleRepeat() {
+        cancelNetworkWait()
         player.repeatMode = when (player.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
             Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
@@ -460,15 +502,107 @@ object PlayerHub {
         player.replaceMediaItem(index, item.buildUpon().setMediaMetadata(metadata).build())
     }
 
+    private fun hasValidatedNetwork(): Boolean {
+        val manager = connectivity ?: return false
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun cancelNetworkWait() {
+        waitingMediaId = null
+        if (_status.value?.kind == "network_wait") _status.value = null
+        networkCallback?.let { callback -> connectivity?.unregisterNetworkCallback(callback) }
+        networkCallback = null
+    }
+
+    private fun waitForNetwork() {
+        if (waitingMediaId != null) return
+        waitingMediaId = player.currentMediaItem?.mediaId ?: return
+        _status.value = PlaybackNotice("network_wait", "网络断开，恢复后自动继续")
+        waitingPosition = player.currentPosition.coerceAtLeast(0L)
+        waitingForRecovery = !hasValidatedNetwork()
+        player.pause()
+        val manager = connectivity ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                val currentCallback = this
+                scope.launch {
+                    if (networkCallback !== currentCallback || waitingMediaId == null) return@launch
+                    if (!validated) waitingForRecovery = true
+                    else if (waitingForRecovery && hasValidatedNetwork()) {
+                        val mediaId = waitingMediaId
+                        val position = waitingPosition
+                        cancelNetworkWait()
+                        if (player.currentMediaItem?.mediaId == mediaId) {
+                            player.seekTo(position)
+                            player.prepare()
+                            player.play()
+                        }
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                val currentCallback = this
+                scope.launch {
+                    if (networkCallback === currentCallback) waitingForRecovery = true
+                }
+            }
+        }
+        networkCallback = callback
+        manager.registerDefaultNetworkCallback(callback)
+        if (waitingForRecovery && hasValidatedNetwork()) callback.onCapabilitiesChanged(
+            manager.activeNetwork ?: return,
+            manager.getNetworkCapabilities(manager.activeNetwork) ?: return,
+        )
+    }
+
+    private fun resetPlaybackProgress() {
+        progressMediaId = player.currentMediaItem?.mediaId
+        progressPosition = player.currentPosition
+        continuousPlaybackMs = 0L
+    }
+
+    private fun updatePlaybackProgress(includeStopped: Boolean = false) {
+        if (!includeStopped && !player.isPlaying) return
+        val mediaId = player.currentMediaItem?.mediaId
+        val position = player.currentPosition
+        if (mediaId != progressMediaId) {
+            resetPlaybackProgress()
+            return
+        }
+        val advanced = position - progressPosition
+        continuousPlaybackMs = if (advanced in 1L..6_000L) continuousPlaybackMs + advanced else 0L
+        progressPosition = position
+        if (continuousPlaybackMs >= 10_000) {
+            consecutiveFailures = 0
+        }
+    }
+
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (!isPlaying && _isPlaying.value) updatePlaybackProgress(includeStopped = true)
+            resetPlaybackProgress()
             _isPlaying.value = isPlaying
             persistPosition()
-            if (isPlaying) consecutiveFailures = 0
         }
 
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) =
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            cancelNetworkWait()
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) _status.value = null
+            resetPlaybackProgress()
             onTrackChanged(finishedPrevious = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
+        }
+
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady && waitingMediaId != null) cancelNetworkWait()
+            if (playWhenReady && _status.value?.kind == "failures_paused") _status.value = null
+        }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
             rebuildQueue()
@@ -490,9 +624,18 @@ object PlayerHub {
             val track = _current.value
             val id = player.currentMediaItem?.mediaId?.toLongOrNull()
             if (id != null) urlCache.keys.removeAll { it.startsWith("$id:") }
+            // 只有真没网才停下等：网络是通的却报超时/连接失败，等不到"恢复"回调会永远卡住，按这首放不了处理。
+            if (!hasValidatedNetwork()) {
+                waitForNetwork()
+                return
+            }
             consecutiveFailures++
+            if (consecutiveFailures >= 5) {
+                player.pause()
+                _status.value = PlaybackNotice("failures_paused", "连续几首都放不了，已暂停")
+                return
+            }
             toast("《${track?.name.orEmpty()}》无法播放，已跳过")
-            if (consecutiveFailures >= 5) return
             when {
                 player.hasNextMediaItem() -> {
                     player.seekToNextMediaItem()

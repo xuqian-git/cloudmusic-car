@@ -106,6 +106,7 @@ fun AppRoot(embedded: Boolean = false) {
                 NowPlayingScreen(onClose = { nav.nowPlayingOpen = false })
             }
         }
+        StatusHost()
         ToastHost()
     }
 }
@@ -317,6 +318,28 @@ private fun MiniPlayer(nav: Nav, modifier: Modifier) {
 // ---------- 提示 ----------
 
 @Composable
+private fun StatusHost() {
+    val status by PlayerHub.status.collectAsState()
+    var displayedText by remember { mutableStateOf(status?.text.orEmpty()) }
+    LaunchedEffect(status) {
+        status?.let { displayedText = it.text }
+    }
+    Box(Modifier.fillMaxSize().padding(top = 28.dp), contentAlignment = Alignment.TopCenter) {
+        AnimatedVisibility(visible = status != null, enter = fadeIn(), exit = fadeOut()) {
+            Text(
+                displayedText,
+                color = Color(0xFFFFC46B),
+                fontSize = 26.sp,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(Color(0xE6202024))
+                    .padding(horizontal = 32.dp, vertical = 18.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun ToastHost() {
     var message by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -328,7 +351,7 @@ private fun ToastHost() {
             message = null
         }
     }
-    Box(Modifier.fillMaxSize().padding(top = 28.dp), contentAlignment = Alignment.TopCenter) {
+    Box(Modifier.fillMaxSize().padding(top = 100.dp), contentAlignment = Alignment.TopCenter) {
         AnimatedVisibility(visible = message != null, enter = fadeIn(), exit = fadeOut()) {
             Text(
                 message.orEmpty(),

@@ -31,11 +31,26 @@ class PlaybackService : MediaSessionService() {
             .build()
         scope.launch {
             PlayerHub.lyrics.collectLatest { lines ->
-                val extras = Bundle()
+                val mediaSession = session ?: return@collectLatest
+                val extras = Bundle(mediaSession.sessionExtras)
+                extras.remove(METADATA_KEY_LYRIC)
                 LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
                     extras.putString(METADATA_KEY_LYRIC, it)
                 }
-                session?.setSessionExtras(extras)
+                mediaSession.setSessionExtras(extras)
+            }
+        }
+        scope.launch {
+            PlayerHub.status.collectLatest { notice ->
+                val mediaSession = session ?: return@collectLatest
+                val extras = Bundle(mediaSession.sessionExtras)
+                extras.remove(STATUS_TEXT)
+                extras.remove(STATUS_KIND)
+                notice?.let {
+                    extras.putString(STATUS_TEXT, it.text)
+                    extras.putString(STATUS_KIND, it.kind)
+                }
+                mediaSession.setSessionExtras(extras)
             }
         }
     }
@@ -57,5 +72,7 @@ class PlaybackService : MediaSessionService() {
 
     private companion object {
         const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
+        const val STATUS_TEXT = "com.paopao.music.STATUS_TEXT"
+        const val STATUS_KIND = "com.paopao.music.STATUS_KIND"
     }
 }

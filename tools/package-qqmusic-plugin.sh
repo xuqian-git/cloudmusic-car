@@ -5,7 +5,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROPS="$PROJECT_DIR/keystore.properties"
 CLASSES_JAR="$PROJECT_DIR/qqmusic/build/intermediates/runtime_app_classes_jar/release/bundleReleaseClassesToRuntimeJar/classes.jar"
 OUT_DIR="$PROJECT_DIR/qqmusic/build/outputs/plugin"
-OUT="$OUT_DIR/QQMusic-v1.0.3.ppmusic"
+OUT="$OUT_DIR/QQMusic-v1.0.4.ppmusic"
 
 property() {
   sed -n "s/^$1=//p" "$PROPS" | tail -n 1

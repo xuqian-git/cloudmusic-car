@@ -45,11 +45,14 @@ class KuGouMusicPlugin {
 
     private object Runtime {
         private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
+        private const val STATUS_TEXT = "com.paopao.music.STATUS_TEXT"
+        private const val STATUS_KIND = "com.paopao.music.STATUS_KIND"
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         private var started = false
         private var session: MediaSession? = null
         private var bridgeHandle: Long? = null
         private var lyricsBridgeJob: Job? = null
+        private var statusBridgeJob: Job? = null
 
         @Synchronized
         fun ensureStarted(context: Context) {
@@ -70,11 +73,26 @@ class KuGouMusicPlugin {
             }
             lyricsBridgeJob = scope.launch {
                 PlayerHub.lyrics.collectLatest { lines ->
-                    val extras = Bundle()
+                    val mediaSession = session ?: return@collectLatest
+                    val extras = Bundle(mediaSession.sessionExtras)
+                    extras.remove(METADATA_KEY_LYRIC)
                     LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
                         extras.putString(METADATA_KEY_LYRIC, it)
                     }
-                    session?.setSessionExtras(extras)
+                    mediaSession.setSessionExtras(extras)
+                }
+            }
+            statusBridgeJob = scope.launch {
+                PlayerHub.status.collectLatest { notice ->
+                    val mediaSession = session ?: return@collectLatest
+                    val extras = Bundle(mediaSession.sessionExtras)
+                    extras.remove(STATUS_TEXT)
+                    extras.remove(STATUS_KIND)
+                    notice?.let {
+                        extras.putString(STATUS_TEXT, it.text)
+                        extras.putString(STATUS_KIND, it.kind)
+                    }
+                    mediaSession.setSessionExtras(extras)
                 }
             }
             started = true
@@ -85,6 +103,8 @@ class KuGouMusicPlugin {
             if (!started) return
             lyricsBridgeJob?.cancel()
             lyricsBridgeJob = null
+            statusBridgeJob?.cancel()
+            statusBridgeJob = null
             bridgeHandle?.let(HostMediaBridge::unregister)
             bridgeHandle = null
             runCatching { session?.release() }
