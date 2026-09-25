@@ -21,6 +21,54 @@
 Release 使用正式签名：读取根目录 `keystore.properties` 与 `keystore/cloudmusic-release.jks`（两者均不入库）。
 **请备份这两个文件**：丢失后无法再发布可覆盖安装的更新。文件缺失时自动回退为 debug 签名。
 
+## 技术栈与开发环境
+
+| 层面 | 技术 |
+|------|------|
+| 语言 | Kotlin 2.0.21（JVM 17） |
+| UI | Jetpack Compose + Material 3（BOM 2024.09.03） |
+| 播放器 | Media3 / ExoPlayer 1.4.1 + MediaSessionService |
+| 网络 | OkHttp 4.12，网易云接口自行实现 weapi/eapi 加密（AES + RSA） |
+| 图片 | Coil 2.7 |
+| 其他 | Palette（封面取色）、ZXing（扫码登录）、kotlinx-coroutines |
+| 构建 | Gradle 8.x + AGP 8.7.3，Kotlin DSL |
+
+开发环境要求：
+
+- JDK 17+
+- Android SDK，`compileSdk = 36`，`minSdk = 28`
+- Android Studio（当前版本自带即可）或命令行 `./gradlew`
+- Windows 上用 `gradlew.bat`；打包脚本 `tools/package-plugin.sh` 为 shell 脚本，需在 Git Bash / WSL 中运行
+- 正式签名需要根目录 `keystore.properties` + `keystore/cloudmusic-release.jks`（不入库），缺失时自动回退 debug 签名
+
+## 产物格式
+
+| 构建命令 | 产物 | 说明 |
+|----------|------|------|
+| `./gradlew assembleRelease` | `app/build/outputs/apk/release/app-release.apk` | 标准独立 Android APK，有桌面图标和 Activity，可直接安装 |
+| `./tools/package-plugin.sh` | `app/build/outputs/plugin/CloudMusic-v1.0.4.ppmusic` | 跑跑桌面功能包：`plugin.json + classes.dex + icon.png` 的签名 JAR，不是 APK，只能被跑跑桌面验签加载 |
+| `./tools/package-qqmusic-plugin.sh` | `qqmusic/build/outputs/plugin/QQMusic-v1.0.3.ppmusic` | QQ 音乐功能包，同理 |
+| `./tools/package-kugoumusic-plugin.sh` | `kugoumusic/build/outputs/plugin/KuGouMusic-v1.0.3.ppmusic` | 酷狗音乐功能包，同理 |
+
+`.ppmusic` 功能包没有 Activity / Manifest / 资源，只含 DEX + 元数据 + 图标。
+宿主通过反射调用 `CloudMusicPlugin.createView(context)` 挂载 ComposeView，
+Compose 运行库由宿主提供，插件编译时的 Compose BOM 版本必须与宿主 ABI 对齐
+（打包脚本中的 `tools/check-host-abi.py` 负责校验）。
+
+## 本地 / 手机测试
+
+日常开发完全不需要在车机上测试，分两种模式：
+
+1. **独立 APK 模式（推荐日常调试）**：`./gradlew assembleDebug` 生成 debug APK，
+   直接安装到手机或模拟器上运行。这是一个普通的 Android 音乐 App，UI、登录、播放、
+   搜索等功能全部可用，也可用 Android Studio 直接 Run。横竖屏自适应已内置。
+2. **功能包模式（.ppmusic）**：需要跑跑桌面作为宿主才能加载。手机上装有跑跑桌面
+   （debug 或 release）即可将打包出的 `.ppmusic` 推入测试验签加载流程；
+   没有宿主时 `.ppmusic` 文件本身无法安装和运行。
+
+**结论**：日常 UI / 逻辑 / 接口开发用独立 APK 在手机或模拟器上调试即可；
+仅最后验证"作为插件被跑跑桌面加载"这一环节需要跑跑桌面环境，两种模式可交替进行。
+
 ## 自适应
 界面按设计稿尺寸（横屏 1280×720、竖屏 800×1280）换算 density，
 不同分辨率 / DPI 的车机显示比例一致；更宽的屏幕（如 1920×720）获得更多横向空间。
