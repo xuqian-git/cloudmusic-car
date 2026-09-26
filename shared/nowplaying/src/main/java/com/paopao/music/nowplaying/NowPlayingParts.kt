@@ -345,14 +345,14 @@ internal fun MainControls(
     gap: Float = 4f,
 ) {
     val playing by source.isPlaying.collectAsState()
+    val playInteraction = remember { MutableInteractionSource() }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(g(gap)), verticalAlignment = Alignment.CenterVertically) {
         IconButton(Icons.Rounded.SkipPrevious, g, skipSize, skipSize * 1.5f, enabled = canPrevious, contentDescription = "上一首", onClick = onPrevious)
         Box(
             Modifier
                 .size(g(playSize))
-                .clip(CircleShape)
-                .background(Color.White)
-                .pressable { source.togglePlay() },
+                .background(Color.White, CircleShape)
+                .clickable(interactionSource = playInteraction, indication = null) { source.togglePlay() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -689,7 +689,10 @@ internal fun QueuePanel(source: NowPlayingSource, accent: Color, g: Grid, width:
             .padding(horizontal = g(2.4f), vertical = g(2.6f)),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("播放队列", color = Color.White, fontSize = g.sp(3.1f), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text("播放队列", color = Color.White, fontSize = g.sp(3.1f), fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(g(0.8f)))
+            Text(queue.size.toString(), color = Faint, fontSize = g.sp(1.9f), fontWeight = FontWeight.Medium)
+            Spacer(Modifier.weight(1f))
             IconButton(Icons.Rounded.Close, g, 3.4f, 6.2f, contentDescription = "关闭", onClick = onClose)
         }
         Spacer(Modifier.height(g(1f)))
