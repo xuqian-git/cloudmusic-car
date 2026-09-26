@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.animation.AnimatedVisibility
@@ -67,7 +68,6 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -78,6 +78,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.Text
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 
 @Composable
 fun PlaylistScreen(nav: Nav, route: Route.PlaylistPage) {
@@ -241,15 +245,22 @@ private fun TrackList(
     AccountStore.loggedIn.collectAsState().value // 登录状态变化时重新计算可播放性
     val listState = rememberLazyListState()
     val playingIndex = remember(tracks, current?.id) { tracks.indexOfFirst { it.id == current?.id } }
-    // 滚动/拖动时浮出快速滚动条和「定位正在播放」，停下 2 秒后收起
-    var toolsVisible by remember { mutableStateOf(false) }
+    // 滚动/拖动时浮出滚动轨，停下 2 秒后收起
+    var railVisible by remember { mutableStateOf(false) }
     var dragging by remember { mutableStateOf(false) }
+    // 超过两屏才给滚动轨；derivedStateOf 只在结论翻转时重组
+    val longList by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            info.visibleItemsInfo.isNotEmpty() && info.totalItemsCount > info.visibleItemsInfo.size * 2
+        }
+    }
     LaunchedEffect(listState.isScrollInProgress, dragging) {
         if (listState.isScrollInProgress || dragging) {
-            toolsVisible = true
+            railVisible = true
         } else {
             delay(2000)
-            toolsVisible = false
+            railVisible = false
         }
     }
 
@@ -264,29 +275,30 @@ private fun TrackList(
                     PlayerHub.play(tracks, start = t, source = source, sourceId = sourceId)
                 }
             }
-            // 末尾留白：浮钮不压最后一行
-            item { Spacer(Modifier.height(LOCATE_SIZE + 16.dp)) }
+            // 末尾留白：「正在播放」胶囊不压最后一行
+            item { Spacer(Modifier.height(PLAYING_CHIP_HEIGHT + 24.dp)) }
         }
-        if (tracks.size >= FAST_SCROLL_MIN_TRACKS) {
-            FastScroller(listState, tracks, toolsVisible) { dragging = it }
+        if (longList && tracks.isNotEmpty()) {
+            ScrollRail(listState, tracks, railVisible || dragging) { dragging = it }
         }
         if (playingIndex >= 0) {
-            LocatePlayingButton(toolsVisible, listState, playingIndex + 1) // +1：第 0 项是头部
+            PlayingChip(listState, tracks[playingIndex], playingIndex + 1) // +1：第 0 项是头部
         }
     }
 }
 
-private const val FAST_SCROLL_MIN_TRACKS = 40
-private val LOCATE_SIZE = 80.dp
+private val PLAYING_CHIP_HEIGHT = 64.dp
 private val THUMB_TOUCH_WIDTH = 64.dp
 private val THUMB_TOUCH_HEIGHT = 104.dp
+private val RAIL_TOP_PADDING = 24.dp
 
 /**
- * 右边缘可拖动的快速滚动条：按住滑块拖到哪，列表就跳到哪，左侧气泡显示「第 N 首 · 歌名」。
- * 滚动位置只在 graphicsLayer 的绘制 lambda 里读，列表滚动不触发这里重组；拖动时只有气泡随序号重组。
+ * 右边缘整条滚动轨：轨道从第一首歌那一行开始（头部还在屏幕上时让开头部），到底栏上方结束；
+ * 按住滑块拖到哪，列表就跳到哪，屏幕中央大气泡显示封面、序号和歌名。
+ * 轨道和滑块位置只在 drawBehind / graphicsLayer 里读列表状态，滚动不触发重组；拖动时只有气泡随序号重组。
  */
 @Composable
-private fun BoxScope.FastScroller(
+private fun BoxScope.ScrollRail(
     listState: LazyListState,
     tracks: List<Track>,
     visible: Boolean,
@@ -296,48 +308,59 @@ private fun BoxScope.FastScroller(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val thumbHeightPx = with(density) { THUMB_TOUCH_HEIGHT.toPx() }
-    var trackHeightPx by remember { mutableIntStateOf(0) }
+    val topPadPx = with(density) { RAIL_TOP_PADDING.toPx() }
+    val bottomPadPx = with(density) { (LocalBottomInset.current + 16.dp).toPx() }
+    val railWidthPx = with(density) { 4.dp.toPx() }
+    val railEndPx = with(density) { 11.dp.toPx() }
+    var heightPx by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
     var dragIndex by remember { mutableIntStateOf(0) }
-    // 拖动时滑块跟手的位置；不拖时由列表位置推算
     var dragTopPx by remember { mutableFloatStateOf(0f) }
     val placedTop = remember { floatArrayOf(0f) }
-    val range = { (trackHeightPx - thumbHeightPx).coerceAtLeast(1f) }
 
-    fun listTopPx(): Float {
+    // 轨道上沿：头部还露在屏幕上时贴着头部下沿，否则贴顶部留白
+    fun railTop(): Float {
         val info = listState.layoutInfo
+        val first = info.visibleItemsInfo.firstOrNull()
+        val headerBottom = if (first?.index == 0) (first.offset - info.viewportStartOffset + first.size).toFloat() else 0f
+        return maxOf(topPadPx, headerBottom)
+    }
+    fun railBottom(): Float = heightPx - bottomPadPx
+    fun thumbRange(top: Float): Float = (railBottom() - top - thumbHeightPx).coerceAtLeast(1f)
+    fun listThumbTop(): Float {
+        val info = listState.layoutInfo
+        val first = info.visibleItemsInfo.firstOrNull() ?: return railTop()
         val scrollable = (info.totalItemsCount - info.visibleItemsInfo.size).coerceAtLeast(1)
-        return (listState.firstVisibleItemIndex.toFloat() / scrollable).coerceIn(0f, 1f) * range()
+        val progress = (listState.firstVisibleItemIndex + listState.firstVisibleItemScrollOffset.toFloat() / first.size.coerceAtLeast(1)) / scrollable
+        val top = railTop()
+        return top + progress.coerceIn(0f, 1f) * thumbRange(top)
     }
 
     AnimatedVisibility(
-        visible = visible || dragging,
+        visible = visible,
         enter = fadeIn(),
         exit = fadeOut(),
-        modifier = Modifier
-            .align(Alignment.TopEnd)
-            .fillMaxHeight()
-            .padding(top = 24.dp, bottom = LocalBottomInset.current + LOCATE_SIZE + 32.dp, end = 12.dp)
-            .onSizeChanged { trackHeightPx = it.height },
+        modifier = Modifier.matchParentSize(),
     ) {
-        Box(Modifier.fillMaxHeight()) {
-            if (dragging) {
-                Box(
-                    Modifier
-                        .graphicsLayer { translationY = placedTop[0] }
-                        .height(THUMB_TOUCH_HEIGHT)
-                        .padding(end = THUMB_TOUCH_WIDTH + 8.dp)
-                        .align(Alignment.TopEnd),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
-                    ScrollBubble({ dragIndex }, tracks)
-                }
-            }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onSizeChanged { heightPx = it.height }
+                .drawBehind {
+                    val top = railTop()
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.12f),
+                        topLeft = Offset(size.width - railEndPx - railWidthPx, top),
+                        size = Size(railWidthPx, (railBottom() - top).coerceAtLeast(0f)),
+                        cornerRadius = CornerRadius(railWidthPx / 2),
+                    )
+                },
+        ) {
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
                     .graphicsLayer {
-                        val top = if (dragging) dragTopPx else listTopPx()
+                        val top = if (dragging) dragTopPx else listThumbTop()
                         placedTop[0] = top
                         translationY = top
                     }
@@ -355,60 +378,82 @@ private fun BoxScope.FastScroller(
                             onDragCancel = { dragging = false; onDragging(false) },
                         ) { change, _ ->
                             change.consume()
-                            // change.position 相对滑块当前摆放位置，所以用 placedTop 换算成轨道坐标
-                            dragTopPx = (placedTop[0] + change.position.y - grabY).coerceIn(0f, range())
-                            val index = ((dragTopPx / range()) * (tracks.size - 1)).roundToInt()
+                            // change.position 相对滑块当前摆放位置，用 placedTop 换回整屏坐标
+                            val top = railTop()
+                            val range = thumbRange(top)
+                            dragTopPx = (placedTop[0] + change.position.y - grabY).coerceIn(top, top + range)
+                            val index = (((dragTopPx - top) / range) * (tracks.size - 1)).roundToInt()
                             if (index != dragIndex) {
                                 dragIndex = index
                                 scope.launch { listState.scrollToItem(index + 1) }
                             }
                         }
                     },
-                contentAlignment = Alignment.Center,
+                contentAlignment = Alignment.CenterEnd,
             ) {
                 Box(
                     Modifier
-                        .size(width = if (dragging) 16.dp else 10.dp, height = 80.dp)
+                        .padding(end = if (dragging) 6.dp else 8.dp)
+                        .size(width = if (dragging) 16.dp else 12.dp, height = 80.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (dragging) c.accent else c.secondary.copy(alpha = 0.7f)),
+                        .background(if (dragging) c.accent else Color.White.copy(alpha = 0.75f)),
                 )
+            }
+            if (dragging) {
+                ScrollBubble({ dragIndex }, tracks, Modifier.align(Alignment.Center))
             }
         }
     }
 }
 
 @Composable
-private fun ScrollBubble(index: () -> Int, tracks: List<Track>) {
+private fun ScrollBubble(index: () -> Int, tracks: List<Track>, modifier: Modifier) {
     val c = K.colors
-    val i = index().coerceIn(0, tracks.lastIndex)
+    val track = tracks[index().coerceIn(0, tracks.lastIndex)]
     Row(
-        Modifier
-            .widthIn(max = 420.dp)
-            .glass(RoundedCornerShape(20.dp), c.glass, c.glassBorder)
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+        modifier
+            .width(460.dp)
+            .glass(RoundedCornerShape(28.dp), c.glass, c.glassBorder)
+            .padding(22.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("第 ${i + 1} 首", color = c.accent, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-        Spacer(Modifier.width(14.dp))
-        Text(tracks[i].name, color = c.label, fontSize = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Artwork(track.album.picUrl, 96.dp, corner = 14.dp, px = 200)
+        Spacer(Modifier.width(22.dp))
+        Column(Modifier.weight(1f)) {
+            Text("第 ${index().coerceIn(0, tracks.lastIndex) + 1} 首", color = c.accent, fontSize = 32.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(track.name, color = c.label, fontSize = 26.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(track.artistNames, color = c.secondary, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
-/** 右下角「定位正在播放」：跳到当前歌曲所在行（行本身已高亮）。 */
+/** 底部居中的「正在播放」胶囊：歌不在屏幕上时出现，箭头指明在上面还是下面，点一下跳过去。 */
 @Composable
-private fun BoxScope.LocatePlayingButton(visible: Boolean, listState: LazyListState, itemIndex: Int) {
+private fun BoxScope.PlayingChip(listState: LazyListState, track: Track, itemIndex: Int) {
     val c = K.colors
     val scope = rememberCoroutineScope()
+    // 0 = 在屏幕上（隐藏），-1 = 在上面，1 = 在下面；只在结论变化时重组
+    val direction by remember(itemIndex) {
+        derivedStateOf {
+            val visible = listState.layoutInfo.visibleItemsInfo
+            when {
+                visible.isEmpty() || visible.any { it.index == itemIndex } -> 0
+                itemIndex < visible.first().index -> -1
+                else -> 1
+            }
+        }
+    }
     AnimatedVisibility(
-        visible = visible,
+        visible = direction != 0,
         enter = fadeIn(),
         exit = fadeOut(),
-        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = LocalBottomInset.current + 16.dp),
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = LocalBottomInset.current + 16.dp),
     ) {
-        Box(
+        Row(
             Modifier
-                .size(LOCATE_SIZE)
-                .glass(CircleShape, c.glass, c.glassBorder)
+                .height(PLAYING_CHIP_HEIGHT)
+                .widthIn(max = 560.dp)
+                .glass(RoundedCornerShape(32.dp), c.glass, c.glassBorder)
                 .pressable {
                     scope.launch {
                         // 留两行上文；离得远直接跳，近的才动画，免得几千首滚半天
@@ -419,10 +464,22 @@ private fun BoxScope.LocatePlayingButton(visible: Boolean, listState: LazyListSt
                             listState.animateScrollToItem(target)
                         }
                     }
-                },
-            contentAlignment = Alignment.Center,
+                }
+                .padding(horizontal = 26.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.GraphicEq, "定位正在播放", tint = c.accent, modifier = Modifier.size(40.dp))
+            Icon(Icons.Rounded.GraphicEq, null, tint = c.accent, modifier = Modifier.size(30.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "正在播放：${track.name}",
+                color = c.label,
+                fontSize = 24.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(if (direction < 0) "↑" else "↓", color = c.accent, fontSize = 28.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
