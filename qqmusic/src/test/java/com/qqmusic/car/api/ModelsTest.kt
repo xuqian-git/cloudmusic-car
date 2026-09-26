@@ -35,15 +35,7 @@ class ModelsTest {
         assertEquals("AI00" to ".flac", qqFileFormat("master"))
     }
 
-    @Test
-    fun loginOnlyOffersQqAndWechat() {
-        assertEquals(listOf("QQ", "微信"), QQLoginType.entries.map(QQLoginType::label))
-    }
 
-    @Test
-    fun qqQrTokenUsesZeroSeedRequiredByPtlogin() {
-        assertEquals(1041100915, QQLoginApi.qqQrToken("test-qrsig"))
-    }
 
     @Test
     fun playlistSearchParsesAndroidCgiBody() {
@@ -90,5 +82,60 @@ class ModelsTest {
         assertTrue(QQMusicApi.isTransientSearchFailure(ApiException(429, "limited")))
         assertFalse(QQMusicApi.isTransientSearchFailure(ApiException(401, "login expired")))
         assertFalse(QQMusicApi.isTransientSearchFailure(IllegalArgumentException("bad query")))
+    }
+
+    @Test
+    fun cgiErrorsReadableWithCode() {
+        assertEquals("QQ 音乐判定请求异常（风控），请稍后再试 (2001)", QQMusicClient.errorMessage(2001, JSONObject()))
+        assertEquals("参数错误 (500)", QQMusicClient.errorMessage(500, JSONObject("""{"message":"参数错误"}""")))
+        assertEquals("接口错误 (123)", QQMusicClient.errorMessage(123, JSONObject()))
+    }
+
+
+    @Test
+    fun mqttPublishSurvivesSplitFramesAndKeepsUserProperties() {
+        val props = Mqtt.properties { userProperty("type", "scanned") }
+        val body = Mqtt.string("management.qrcode_login/abc") + props + """{"a":1}""".toByteArray()
+        val publish = Mqtt.packet(0x30, body)
+        assertEquals(null, Mqtt.readPacket(publish.copyOf(publish.size - 3)))
+        val packet = Mqtt.readPacket(publish + byteArrayOf(0xD0.toByte(), 0))!!
+        assertEquals(3, packet.type)
+        assertEquals(publish.size, packet.consumed)
+        val reader = Mqtt.Reader(packet.body)
+        assertEquals("management.qrcode_login/abc", reader.string())
+        assertEquals("scanned", reader.properties().userProperties["type"])
+        assertEquals("""{"a":1}""", String(reader.rest()))
+    }
+
+    @Test
+    fun mqttConnackRedirectReadsServerReference() {
+        val props = Mqtt.properties { string(0x1C, "10.0.0.1:443") }
+        val reader = Mqtt.Reader(byteArrayOf(0, 0x9D.toByte()) + props)
+        reader.byte()
+        assertEquals(0x9D, reader.byte())
+        assertEquals("10.0.0.1:443", reader.properties().strings[0x1C])
+        assertEquals("/ws/handshake/10.0.0.1:443", QQMobileLogin.redirectPath("/ws/handshake", "10.0.0.1:443"))
+        assertEquals("/ws/handshake/10.0.0.2:443", QQMobileLogin.redirectPath("/ws/handshake/10.0.0.1:443", "10.0.0.2:443"))
+    }
+
+    @Test
+    fun mqttRemainingLengthUsesVarInt() {
+        assertEquals(listOf(0xC1, 0x02), Mqtt.varInt(321).map { it.toInt() and 0xFF })
+        val big = Mqtt.packet(0x30, ByteArray(321))
+        assertEquals(321, Mqtt.readPacket(big)!!.body.size)
+    }
+
+    @Test
+    fun songSearchParserReadsMobileSearchItems() {
+        val response = JSONObject(
+            """{"body":{"item_song":[{"id":97773,"mid":"0039MnYb0qxYhV","title":"晴天","interval":269,"singer":[{"id":4558,"name":"周杰伦"}],"album":{"id":8220,"mid":"000MkMni19ClKG","title":"叶惠美"},"file":{"media_mid":"0039MnYb0qxYhV","size_128mp3":4303786}},{"id":0,"mid":"","title":""}]}}""",
+        )
+        val songs = QQMusicApi.parseSongSearch(response)
+
+        assertEquals(1, songs.size)
+        assertEquals("晴天", songs.single().name)
+        assertEquals("周杰伦", songs.single().artists.single().name)
+        assertEquals("叶惠美", songs.single().album.name)
+        assertEquals(269_000L, songs.single().durationMs)
     }
 }

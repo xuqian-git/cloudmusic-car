@@ -1,6 +1,7 @@
 package com.qqmusic.car.api
 
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -12,10 +13,21 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 object QQMusicApi {
+    private const val TAG = "QQSearch"
+    private const val SEARCH_TYPE_SONG = 0
+    private const val SEARCH_TYPE_PLAYLIST = 3
+
     private val client = QQMusicClient
     private val tracks = ConcurrentHashMap<Long, Track>()
 
-    suspend fun logout() = client.clearAuthCookies()
+    /**
+     * 先通知服务器退出再清本地（同 QQMusicApi 的 LoginServer.Logout）。只清本地的话服务器仍记着这台设备已登录，
+     * 装过/重装过的设备越攒越多，最后新登录报 20279「登录设备数已达上限」。网络失败也照样清本地。
+     */
+    suspend fun logout() {
+        if (client.isLoggedIn) runCatching { client.cgiAndroid("music.login.LoginServer", "Logout") }
+        client.clearAuthCookies()
+    }
     suspend fun refreshLogin() = Unit
 
     suspend fun userAccount(): Profile? {
@@ -196,7 +208,19 @@ object QQMusicApi {
         QQRecentStore.record(track)
     }
 
+    /**
+     * 搜歌走 App 同款的 DoSearchForQQMusicMobile（与 QQMusicApi 一致）。
+     * 老的网页接口 client_search_cp 在车机流量卡这类共享出口 IP 上会被间歇限流，只在新接口出错或没结果时兜底。
+     */
     suspend fun searchSongs(keywords: String, limit: Int = 50): List<Track> {
+        val mobile = runCatching {
+            searchRequest { mobileSearch(keywords, SEARCH_TYPE_SONG, limit) }
+        }.onFailure {
+            if (it is CancellationException) throw it
+            Log.w(TAG, "App 搜索接口失败，退回网页接口", it)
+        }.getOrNull()?.let(::parseSongSearch).orEmpty()
+        if (mobile.isNotEmpty()) return register(mobile)
+        Log.i(TAG, "App 搜索接口没结果，退回网页接口")
         val encoded = URLEncoder.encode(keywords, "UTF-8")
         val data = searchRequest {
             client.getJson("https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&p=1&n=$limit&w=$encoded&cr=1&g_tk=5381&t=0&aggr=1&lossless=1")
@@ -204,24 +228,27 @@ object QQMusicApi {
         return register(data.optJSONObject("data")?.optJSONObject("song")?.optJSONArray("list").objects().map(Track::parse))
     }
 
-    suspend fun searchPlaylists(keywords: String, limit: Int = 40): List<Playlist> {
-        val data = searchRequest {
-            client.cgiAndroid(
-                "music.search.SearchCgiService", "DoSearchForQQMusicMobile",
-                JSONObject()
-                    .put("searchid", searchId())
-                    .put("query", keywords)
-                    .put("search_type", 3)
-                    .put("num_per_page", limit)
-                    .put("page_num", 1)
-                    .put("highlight", 0)
-                    .put("grp", 1)
-                    .put("selectors", JSONObject())
-                    .put("vec_selectors", JSONArray()),
-            )
-        }
-        return parsePlaylistSearch(data)
-    }
+    suspend fun searchPlaylists(keywords: String, limit: Int = 40): List<Playlist> =
+        parsePlaylistSearch(searchRequest { mobileSearch(keywords, SEARCH_TYPE_PLAYLIST, limit) })
+
+    private suspend fun mobileSearch(keywords: String, type: Int, limit: Int): JSONObject =
+        client.cgiAndroid(
+            "music.search.SearchCgiService", "DoSearchForQQMusicMobile",
+            JSONObject()
+                .put("searchid", searchId())
+                .put("query", keywords)
+                .put("search_type", type)
+                .put("num_per_page", limit)
+                .put("page_num", 1)
+                .put("highlight", 0)
+                .put("grp", 1)
+                .put("selectors", JSONObject())
+                .put("vec_selectors", JSONArray()),
+        )
+
+    internal fun parseSongSearch(root: JSONObject): List<Track> =
+        root.optJSONObject("body")?.optJSONArray("item_song").objects()
+            .map(Track::parse).filter { it.mid.isNotBlank() && it.name.isNotBlank() }
 
     suspend fun searchDefaultKeyword(): String? = "搜索歌曲、歌手、专辑或歌单"
 

@@ -50,8 +50,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.qqmusic.car.api.QQMusicApi
 import com.qqmusic.car.api.QQLoginApi
+import com.qqmusic.car.api.QQLoginExchangeException
 import com.qqmusic.car.api.QQLoginState
-import com.qqmusic.car.api.QQLoginType
 import com.qqmusic.car.api.sized
 import com.qqmusic.car.data.AccountStore
 import com.qqmusic.car.data.AudioQuality
@@ -81,40 +81,48 @@ fun LoginScreen() {
     var qr by remember { mutableStateOf<Bitmap?>(null) }
     var state by remember { mutableStateOf(QrState.LOADING) }
     var serverMessage by remember { mutableStateOf<String?>(null) }
-    var loginType by remember { mutableStateOf(QQLoginType.QQ) }
 
-    LaunchedEffect(attempt, loginType) {
+    LaunchedEffect(attempt) {
         state = QrState.LOADING
         qr = null
         serverMessage = null
-        val session = runCatching { QQLoginApi.create(loginType) }.getOrElse {
+        val session = runCatching { QQLoginApi.create() }.getOrElse {
             serverMessage = it.message
             state = QrState.ERROR
             return@LaunchedEffect
         }
-        qr = BitmapFactory.decodeByteArray(session.image, 0, session.image.size)
-        state = QrState.WAITING
-        while (true) {
-            delay(2000)
-            val checked = runCatching { QQLoginApi.check(session) }
-            if (checked.isFailure) {
-                serverMessage = checked.exceptionOrNull()?.message
+        try {
+            qr = BitmapFactory.decodeByteArray(session.image, 0, session.image.size)
+            state = QrState.WAITING
+            while (true) {
                 delay(2000)
-                continue
-            }
-            val result = checked.getOrThrow()
-            when (result) {
-                QQLoginState.EXPIRED, QQLoginState.REFUSED -> {
-                    state = QrState.EXPIRED
-                    return@LaunchedEffect
+                val checked = runCatching { QQLoginApi.check(session) }
+                if (checked.isFailure) {
+                    val error = checked.exceptionOrNull()
+                    serverMessage = error?.message
+                    if (error is QQLoginExchangeException) {
+                        state = QrState.ERROR
+                        return@LaunchedEffect
+                    }
+                    delay(2000)
+                    continue
                 }
-                QQLoginState.SCANNED -> state = QrState.SCANNED
-                QQLoginState.DONE -> {
-                    AccountStore.onLoginSucceeded()
-                    return@LaunchedEffect
+                val result = checked.getOrThrow()
+                when (result) {
+                    QQLoginState.EXPIRED, QQLoginState.REFUSED -> {
+                        state = QrState.EXPIRED
+                        return@LaunchedEffect
+                    }
+                    QQLoginState.SCANNED -> state = QrState.SCANNED
+                    QQLoginState.DONE -> {
+                        AccountStore.onLoginSucceeded()
+                        return@LaunchedEffect
+                    }
+                    QQLoginState.WAITING -> state = QrState.WAITING
                 }
-                QQLoginState.WAITING -> state = QrState.WAITING
             }
+        } finally {
+            QQLoginApi.close(session)
         }
     }
 
@@ -156,32 +164,20 @@ fun LoginScreen() {
             Label("QQ 音乐", 64.sp, c.label, FontWeight.ExtraBold)
             Spacer(Modifier.height(10.dp))
             Label("QQ 音乐车机版", 26.sp, c.secondary)
-            Spacer(Modifier.height(24.dp))
-            Row(
-                Modifier.background(c.fill, RoundedCornerShape(16.dp)).padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                QQLoginType.entries.forEach { type ->
-                    val selected = type == loginType
-                    Box(
-                        Modifier
-                            .background(if (selected) c.accent else Color.Transparent, RoundedCornerShape(12.dp))
-                            .pressable { loginType = type }
-                            .padding(horizontal = 22.dp, vertical = 12.dp),
-                    ) {
-                        Label(type.label, 22.sp, if (selected) Color.White else c.label, FontWeight.SemiBold)
-                    }
-                }
-            }
             Spacer(Modifier.height(40.dp))
             val status = when (state) {
                 QrState.LOADING -> "正在生成二维码…"
-                QrState.WAITING -> "打开${loginType.label} App\n扫一扫登录"
+                QrState.WAITING -> "打开手机 QQ 音乐\n扫码登录"
                 QrState.SCANNED -> "已扫码\n请在手机上确认登录"
                 QrState.EXPIRED -> "二维码已过期\n点击二维码刷新"
-                QrState.ERROR -> "网络异常\n点击重试"
+                QrState.ERROR -> "登录没有成功\n点击重试"
             }
             Label(status, 34.sp, c.label, FontWeight.SemiBold, maxLines = 3)
+            // QQ 音乐 App 的扫码入口藏得深，直接告诉用户路径
+            if (state == QrState.WAITING || state == QrState.LOADING) {
+                Spacer(Modifier.height(16.dp))
+                Label("进入「我的」→ 右上角更多菜单 → 右上角扫码按钮", 24.sp, c.secondary, maxLines = 3)
+            }
             serverMessage?.let {
                 Spacer(Modifier.height(16.dp))
                 Label(it, 24.sp, c.accent, maxLines = 3)

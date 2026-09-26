@@ -106,7 +106,7 @@ object QQMusicClient {
         param: JSONObject = JSONObject(),
         overrides: Map<String, Any?> = emptyMap(),
     ): JSONObject = withContext(Dispatchers.IO) {
-        cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides))
+        cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides), QQAndroidIdentity.USER_AGENT)
     }
 
     fun cgiAndroidBlocking(
@@ -114,24 +114,39 @@ object QQMusicClient {
         method: String,
         param: JSONObject = JSONObject(),
         overrides: Map<String, Any?> = emptyMap(),
-    ): JSONObject = cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides))
+    ): JSONObject = cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides), QQAndroidIdentity.USER_AGENT)
 
-    fun cgiBlocking(module: String, method: String, param: JSONObject = JSONObject(), comm: JSONObject? = null): JSONObject {
+    /**
+     * [androidUserAgent] 非空表示 comm 是安卓 App 身份（ct=11）：请求头也必须是 QQ 音乐安卓 App 的，
+     * 身份前后矛盾会被风控时拦时放（登录换凭证尤其明显），与 QQMusicApi 一致。
+     */
+    fun cgiBlocking(
+        module: String,
+        method: String,
+        param: JSONObject = JSONObject(),
+        comm: JSONObject? = null,
+        androidUserAgent: String? = null,
+    ): JSONObject {
         val payload = JSONObject()
             .put("comm", comm ?: commonParams())
             .put("req_0", JSONObject().put("module", module).put("method", method).put("param", param))
         val request = Request.Builder()
             .url(CGI_URL)
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", "https://y.qq.com/")
+            .apply {
+                if (androidUserAgent != null) {
+                    header("User-Agent", androidUserAgent)
+                } else {
+                    header("User-Agent", USER_AGENT).header("Referer", "https://y.qq.com/")
+                }
+            }
             .build()
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "网络错误 (${response.code})")
             val root = JSONObject(response.body?.string().orEmpty())
             val item = root.optJSONObject("req_0") ?: throw ApiException(-1, "QQ 音乐返回为空")
             val code = item.optInt("code")
-            if (code != 0) throw ApiException(code, item.optString("msg").ifEmpty { "接口错误 ($code)" })
+            if (code != 0) throw ApiException(code, errorMessage(code, item))
             return item.optJSONObject("data") ?: JSONObject()
         }
     }
@@ -171,6 +186,24 @@ object QQMusicClient {
             }
             overrides.forEach { (key, value) -> if (value != null) put(key, value) }
         }
+    }
+
+    /** 错误码含义取自 QQMusicApi（core/response.py、modules/login.py）；服务器给了说明就优先用。 */
+    internal fun errorMessage(code: Int, item: JSONObject): String {
+        val known = when (code) {
+            1000, 104400, 104401 -> "登录已失效，请重新扫码"
+            2001 -> "QQ 音乐判定请求异常（风控），请稍后再试"
+            20261 -> "登录参数错误"
+            20272 -> "账号绑定异常"
+            20274 -> "账号未绑定 QQ 音乐"
+            20277, 20278 -> "账号登录受限"
+            20279 -> "登录设备数已达上限，请先在其他设备退出"
+            20450 -> "账号已被封禁"
+            104604 -> "登录太频繁，请稍后再试"
+            else -> null
+        }
+        val server = item.optString("message").ifEmpty { item.optString("msg") }
+        return "${known ?: server.ifEmpty { "接口错误" }} ($code)"
     }
 
     fun hash33(value: String, seed: Int = 5381): Int {

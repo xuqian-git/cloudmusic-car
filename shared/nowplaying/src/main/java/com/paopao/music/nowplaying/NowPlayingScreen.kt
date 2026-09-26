@@ -380,7 +380,7 @@ private fun PortraitLayout(
                 LyricsList(
                     source, clock, g,
                     Modifier.fillMaxSize().padding(start = g(6f), end = g(6f), top = g(9f)),
-                    textSize = 3.6f,
+                    textSize = 4.5f,
                     inactiveScale = 0.7f,
                     lineGap = 1.6f,
                     visible = lyricsVisible,
@@ -466,8 +466,8 @@ private fun LyricTeaser(source: NowPlayingSource, clock: PlaybackClock, accent: 
     val active by remember(lines) { derivedStateOf { lines.activeIndex(clock.position.longValue + LyricLeadMs) } }
     val text = lines.getOrNull(active)?.text ?: "前奏"
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        Text("♪ ", color = accent, fontSize = g.sp(1.95f))
-        Text(text, color = Color.White.copy(alpha = 0.72f), fontSize = g.sp(1.95f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("♪ ", color = accent, fontSize = g.sp(2.45f))
+        Text(text, color = Color.White.copy(alpha = 0.72f), fontSize = g.sp(2.45f), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -509,7 +509,7 @@ private fun LandscapeLayout(
             source, clock, g,
             Modifier.padding(start = lyricsStart, end = g(6f), top = g(6f), bottom = g(26f)).fillMaxSize(),
             anchor = 0.36f,
-            textSize = 3.8f,
+            textSize = 4.75f,
             inactiveScale = 0.7f,
             lineGap = 1.6f,
         )
@@ -571,11 +571,11 @@ private fun UltraWideLayout(
             }
         }
         Column(Modifier.fillMaxHeight().padding(start = rightStart, end = g(6f))) {
-            // 当前句大、其余小，行距拉开：屏上约 7 句
+            // 当前句大、其余小，行距拉开：屏上约 5-6 句
             LyricsList(
                 source, clock, g,
                 Modifier.weight(1f).fillMaxWidth().padding(top = g(6f), bottom = g(3f)),
-                textSize = 5.6f,
+                textSize = 7.0f,
                 centered = true,
                 anchor = 0.4f,
                 inactiveScale = 0.68f,

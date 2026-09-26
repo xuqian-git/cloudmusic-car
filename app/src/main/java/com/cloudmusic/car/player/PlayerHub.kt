@@ -322,13 +322,15 @@ object PlayerHub {
     fun next() {
         cancelNetworkWait()
         _status.value = null
-        if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (_mode.value == PlayMode.FM) extendFm(true)
+        val index = manualNextIndex()
+        if (index != C.INDEX_UNSET) player.seekTo(index, 0) else if (_mode.value == PlayMode.FM) extendFm(true)
     }
 
     fun previous() {
         cancelNetworkWait()
         _status.value = null
-        player.seekToPrevious()
+        val index = manualPreviousIndex()
+        if (index != C.INDEX_UNSET) player.seekTo(index, 0) else player.seekTo(0)
     }
 
     fun seekTo(ms: Long) {
@@ -434,13 +436,29 @@ object PlayerHub {
         }
     }
 
-    /** 上一首 / 下一首直接取自播放器，已含随机顺序和循环规则；只有一首歌时没有邻居。 */
+    /**
+     * 手动切歌（按键、滑动、播放失败跳过）的目标。单曲循环只管自动续播，手动切歌仍按列表循环走，
+     * 否则 ExoPlayer 在单曲循环下按「不循环」导航，列表最后一首点下一首没反应。
+     * 通知栏 / 方向盘 / 桌面底栏经 MediaSession 直接调播放器，不经过这里（ForwardingPlayer 不在桌面共享库清单里）。
+     */
+    private fun manualNextIndex(): Int = manualNeighbor(forward = true)
+    private fun manualPreviousIndex(): Int = manualNeighbor(forward = false)
+    private fun manualNeighbor(forward: Boolean): Int {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return C.INDEX_UNSET
+        val repeat = if (player.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ALL else player.repeatMode
+        val current = player.currentMediaItemIndex
+        return if (forward) timeline.getNextWindowIndex(current, repeat, player.shuffleModeEnabled)
+        else timeline.getPreviousWindowIndex(current, repeat, player.shuffleModeEnabled)
+    }
+
+    /** 上一首 / 下一首按播放器当前的随机顺序和循环规则算，与按键实际切到的一致；只有一首歌时没有邻居。 */
     private fun updateNeighbors() {
         val current = player.currentMediaItemIndex
         fun neighbor(index: Int) = index.takeIf { it != C.INDEX_UNSET && it != current }
         _neighbors.value = NowPlayingNeighbors(
-            previousIndex = neighbor(player.previousMediaItemIndex),
-            nextIndex = neighbor(player.nextMediaItemIndex),
+            previousIndex = neighbor(manualPreviousIndex()),
+            nextIndex = neighbor(manualNextIndex()),
         )
     }
 
@@ -624,8 +642,8 @@ object PlayerHub {
             }
             toast("《${track?.name.orEmpty()}》无法播放，已跳过")
             when {
-                player.hasNextMediaItem() -> {
-                    player.seekToNextMediaItem()
+                manualNextIndex() != C.INDEX_UNSET -> {
+                    player.seekTo(manualNextIndex(), 0)
                     player.prepare()
                     player.play()
                 }
