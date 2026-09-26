@@ -59,7 +59,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.zIndex
-import androidx.media3.common.Player
 import androidx.palette.graphics.Palette
 import coil.request.ImageRequest
 import kotlinx.coroutines.CoroutineScope
@@ -144,7 +143,6 @@ internal class TrackSwitcher(
         internal set
     var next by mutableStateOf<NowPlayingTrack?>(null)
         internal set
-    internal var previousIndex = -1
     internal var anchorId: Long = Long.MIN_VALUE
     private var animating = false
     /** 手指拖动的参考距离（封面区高度）。 */
@@ -190,7 +188,7 @@ internal class TrackSwitcher(
                 when {
                     // 下一首走播放器自己的逻辑（私人 FM 会顺带补货）
                     target < 0f -> source.next()
-                    target > 0f -> if (previousIndex >= 0) source.jumpTo(previousIndex) else source.previous()
+                    target > 0f -> source.previous()
                 }
             } finally {
                 animating = false
@@ -205,23 +203,13 @@ private fun rememberTrackSwitcher(source: NowPlayingSource, current: NowPlayingT
     val switcher = remember(source) { TrackSwitcher(source, scope) }
     val queue by source.queue.collectAsState()
     val fm by source.isFm.collectAsState()
-    val repeat by source.repeatMode.collectAsState()
-    val pos = queue.indexOfFirst { it.track.id == current.id }
-    val wrap = repeat == Player.REPEAT_MODE_ALL && queue.size > 1
-    val prev = when {
-        fm || pos < 0 -> null
-        pos > 0 -> queue[pos - 1]
-        wrap -> queue.last()
-        else -> null
-    }
-    val next = when {
-        pos < 0 -> null
-        pos < queue.lastIndex -> queue[pos + 1]
-        wrap -> queue.first()
-        else -> null
-    }
+    val neighbors by source.neighbors.collectAsState()
+    val inQueue = queue.any { it.track.id == current.id }
+    fun itemAt(index: Int?) = index?.let { i -> queue.firstOrNull { it.index == i } }
+    // 邻居由播放器按当前播放模式算出，预览的就是上一首 / 下一首按键真正会切到的歌
+    val prev = if (fm || !inQueue) null else itemAt(neighbors.previousIndex)
+    val next = if (inQueue) itemAt(neighbors.nextIndex) else null
     switcher.previous = prev?.track
-    switcher.previousIndex = prev?.index ?: -1
     switcher.next = next?.track
     // 换歌后在同一帧把舞台归位：新的“当前”正好停在原来“下一首”的位置，看不出跳变
     if (switcher.anchorId != current.id) {

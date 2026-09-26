@@ -34,16 +34,30 @@ data class NowPlayingLyric(
 
 data class NowPlayingQueueItem(val index: Int, val track: NowPlayingTrack)
 
+/** 播放器按当前播放模式（顺序 / 单曲循环 / 随机）给出的上一首、下一首在队列中的索引；没有时为 null。 */
+data class NowPlayingNeighbors(
+    val previousIndex: Int?,
+    val nextIndex: Int?,
+)
+
+/** 播放模式：顺序播放（列表循环）→ 单曲循环 → 随机播放。私人 FM 等电台队列不受它影响。 */
+object PlayModes {
+    const val SEQUENTIAL = 0
+    const val REPEAT_ONE = 1
+    const val SHUFFLE = 2
+}
+
 interface NowPlayingSource {
     val current: StateFlow<NowPlayingTrack?>
     val isPlaying: StateFlow<Boolean>
-    /** 按实际播放顺序（含随机）排好的整条队列。 */
+    /** 按歌单原顺序排好的整条队列（随机模式下也不打乱）。 */
     val queue: StateFlow<List<NowPlayingQueueItem>>
     val isFm: StateFlow<Boolean>
     val sourceName: StateFlow<String?>
-    val shuffle: StateFlow<Boolean>
-    /** Media3 的 Player.REPEAT_MODE_*。 */
-    val repeatMode: StateFlow<Int>
+    /** [PlayModes] 中的值。 */
+    val playMode: StateFlow<Int>
+    /** 滑动切歌预览的上一首 / 下一首，与上一首 / 下一首按键实际切到的歌一致。 */
+    val neighbors: StateFlow<NowPlayingNeighbors>
     val lyrics: StateFlow<List<NowPlayingLyric>>
     val likedIds: StateFlow<Set<Long>>
 
@@ -56,8 +70,7 @@ interface NowPlayingSource {
     fun previous()
     fun seekTo(ms: Long)
     fun jumpTo(index: Int)
-    fun toggleShuffle()
-    fun cycleRepeat()
+    fun cyclePlayMode()
     fun fmTrash()
     fun toggleLike(trackId: Long)
 

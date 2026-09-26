@@ -33,6 +33,8 @@ import com.kugoumusic.car.data.AccountStore
 import com.kugoumusic.car.data.AudioQuality
 import com.kugoumusic.car.data.MusicCache
 import com.kugoumusic.car.data.Settings
+import com.paopao.music.nowplaying.NowPlayingNeighbors
+import com.paopao.music.nowplaying.PlayModes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,7 +82,7 @@ object PlayerHub {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
-    /** 按实际播放顺序（含随机）排列的队列，以及当前歌曲在其中的位置。 */
+    /** 按歌单原顺序排列的队列（随机模式下也不打乱），以及当前歌曲在其中的位置。 */
     private val _queue = MutableStateFlow<List<Pair<Int, Track>>>(emptyList())
     val queue: StateFlow<List<Pair<Int, Track>>> = _queue.asStateFlow()
 
@@ -90,11 +92,11 @@ object PlayerHub {
     private val _sourceName = MutableStateFlow<String?>(null)
     val sourceName: StateFlow<String?> = _sourceName.asStateFlow()
 
-    private val _shuffle = MutableStateFlow(false)
-    val shuffle: StateFlow<Boolean> = _shuffle.asStateFlow()
+    private val _playMode = MutableStateFlow(PlayModes.SEQUENTIAL)
+    val playMode: StateFlow<Int> = _playMode.asStateFlow()
 
-    private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_ALL)
-    val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
+    private val _neighbors = MutableStateFlow(NowPlayingNeighbors(null, null))
+    val neighbors: StateFlow<NowPlayingNeighbors> = _neighbors.asStateFlow()
 
     private val _lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
     val lyrics: StateFlow<List<LyricLine>> = _lyrics.asStateFlow()
@@ -144,9 +146,10 @@ object PlayerHub {
             // 「上一首」永远切到上一首，不按默认规则放过 3 秒就改成从头重放；桌面底栏、方向盘走的也是它。
             .setMaxSeekToPreviousPositionMs(Long.MAX_VALUE)
             .build()
-        player.repeatMode = Player.REPEAT_MODE_ALL
         player.addListener(listener)
         PlaybackSnapshotStore.init(context)
+        _playMode.value = PlaybackSnapshotStore.restorePlayMode()
+        applyPlayMode()
         PlaybackSnapshotStore.restore()?.let(::restorePlayback)
         scope.launch {
             while (true) {
@@ -179,9 +182,8 @@ object PlayerHub {
         sourceId = snapshot.sourceId
         _mode.value = snapshot.mode
         _sourceName.value = snapshot.sourceName
+        applyPlayMode()
         player.setMediaItems(snapshot.tracks.map(::mediaItem), snapshot.currentIndex, snapshot.positionMs)
-        player.shuffleModeEnabled = snapshot.shuffle
-        player.repeatMode = if (snapshot.mode.endless) Player.REPEAT_MODE_OFF else snapshot.repeatMode
         player.prepare()
         player.pause()
     }
@@ -282,8 +284,7 @@ object PlayerHub {
         _mode.value = mode
         _sourceName.value = source
         consecutiveFailures = 0
-        player.shuffleModeEnabled = shuffle
-        player.repeatMode = if (mode.endless) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
+        if (shuffle) setPlayMode(PlayModes.SHUFFLE) else applyPlayMode()
         player.setMediaItems(playable.map(::mediaItem), startIndex, 0)
         persistQueue(playable, startIndex)
         player.prepare()
@@ -367,17 +368,35 @@ object PlayerHub {
         player.play()
     }
 
-    fun toggleShuffle() {
+    /** 顺序播放 → 单曲循环 → 随机播放 → 顺序播放，持久化后重启仍保持。 */
+    fun cyclePlayMode() {
         cancelNetworkWait()
-        player.shuffleModeEnabled = !player.shuffleModeEnabled
+        setPlayMode(
+            when (_playMode.value) {
+                PlayModes.SEQUENTIAL -> PlayModes.REPEAT_ONE
+                PlayModes.REPEAT_ONE -> PlayModes.SHUFFLE
+                else -> PlayModes.SEQUENTIAL
+            },
+        )
     }
 
-    fun cycleRepeat() {
-        cancelNetworkWait()
-        player.repeatMode = when (player.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+    private fun setPlayMode(mode: Int) {
+        _playMode.value = mode
+        PlaybackSnapshotStore.savePlayMode(mode)
+        applyPlayMode()
+    }
+
+    /**
+     * 播放模式直接落到 ExoPlayer 上，自动切歌、播放失败跳过、通知栏、方向盘、宿主底栏因此都按同一套顺序走。
+     * 私人 FM、心动模式是边放边续的电台，始终顺序、不循环，播放模式只对普通队列生效。
+     */
+    private fun applyPlayMode() {
+        val radio = _mode.value.endless
+        player.shuffleModeEnabled = !radio && _playMode.value == PlayModes.SHUFFLE
+        player.repeatMode = when {
+            radio -> Player.REPEAT_MODE_OFF
+            _playMode.value == PlayModes.REPEAT_ONE -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_ALL
         }
     }
 
@@ -420,8 +439,6 @@ object PlayerHub {
             _sourceName.value,
             sourceId,
             _mode.value,
-            player.shuffleModeEnabled,
-            player.repeatMode,
         )
         persistPosition()
     }
@@ -438,15 +455,20 @@ object PlayerHub {
             _queue.value = emptyList()
             return
         }
-        val shuffle = player.shuffleModeEnabled
-        val ordered = mutableListOf<Pair<Int, Track>>()
-        var index = timeline.getFirstWindowIndex(shuffle)
-        while (index != C.INDEX_UNSET && ordered.size < timeline.windowCount) {
-            val id = player.getMediaItemAt(index).mediaId.toLongOrNull()
-            tracks[id]?.let { ordered += index to it }
-            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffle)
+        val shuffle = _playMode.value == PlayModes.SHUFFLE
+        _queue.value = (0 until timeline.windowCount).mapNotNull { index ->
+            tracks[player.getMediaItemAt(index).mediaId.toLongOrNull()]?.let { index to it }
         }
-        _queue.value = ordered
+    }
+
+    /** 上一首 / 下一首直接取自播放器，已含随机顺序和循环规则；只有一首歌时没有邻居。 */
+    private fun updateNeighbors() {
+        val current = player.currentMediaItemIndex
+        fun neighbor(index: Int) = index.takeIf { it != C.INDEX_UNSET && it != current }
+        _neighbors.value = NowPlayingNeighbors(
+            previousIndex = neighbor(player.previousMediaItemIndex),
+            nextIndex = neighbor(player.nextMediaItemIndex),
+        )
     }
 
     private fun onTrackChanged(finishedPrevious: Boolean = false) {
@@ -596,6 +618,7 @@ object PlayerHub {
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) _status.value = null
             resetPlaybackProgress()
             onTrackChanged(finishedPrevious = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
+            updateNeighbors()
         }
 
 
@@ -607,18 +630,12 @@ object PlayerHub {
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
             rebuildQueue()
             if (_current.value?.id?.toString() != player.currentMediaItem?.mediaId) onTrackChanged()
+            updateNeighbors()
         }
 
-        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-            _shuffle.value = shuffleModeEnabled
-            rebuildQueue()
-            persistQueue()
-        }
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = updateNeighbors()
 
-        override fun onRepeatModeChanged(repeatMode: Int) {
-            _repeatMode.value = repeatMode
-            persistQueue()
-        }
+        override fun onRepeatModeChanged(repeatMode: Int) = updateNeighbors()
 
         override fun onPlayerError(error: PlaybackException) {
             val track = _current.value
