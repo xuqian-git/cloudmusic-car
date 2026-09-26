@@ -2,6 +2,7 @@ package com.qqmusic.car.api
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.Request
 import org.json.JSONObject
@@ -66,14 +67,14 @@ object QQLoginApi {
             "appid" to WX_APP_ID, "redirect_uri" to redirect, "response_type" to "code",
             "scope" to "snsapi_login", "state" to "STATE",
         )
-        val html = QQMusicClient.http.newCall(Request.Builder().url(page).build()).execute().use { response ->
+        val html = QQMusicClient.http.newCall(Request.Builder().url(page).header("User-Agent", WEB_USER_AGENT).build()).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "获取微信二维码失败")
             response.body?.string().orEmpty()
         }
         val uuid = Regex("qrcode/([A-Za-z0-9_-]+)").find(html)?.groupValues?.get(1)
             ?: error("微信登录没有返回二维码编号")
         val image = QQMusicClient.http.newCall(
-            Request.Builder().url("https://open.weixin.qq.com/connect/qrcode/$uuid").header("Referer", page).build(),
+            Request.Builder().url("https://open.weixin.qq.com/connect/qrcode/$uuid").header("Referer", page).header("User-Agent", WEB_USER_AGENT).build(),
         ).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "下载微信二维码失败")
             response.body?.bytes() ?: byteArrayOf()
@@ -121,10 +122,14 @@ object QQLoginApi {
             "regmaster" to "0", "pt_login_type" to "3", "pt_aid" to "0", "pt_aaid" to "16",
             "pt_light" to "0", "pt_3rd_aid" to QQ_THIRD_APP_ID,
         )
-        val noRedirect = QQMusicClient.http.newBuilder().followRedirects(false).followSslRedirects(false).build()
-        val cookies = noRedirect.newCall(Request.Builder().url(checkUrl).header("Referer", "https://xui.ptlogin2.qq.com/").build())
-            .execute().use { response -> response.headers("Set-Cookie").map { it.substringBefore(';') } }
-        val pSkey = cookies.firstOrNull { it.startsWith("p_skey=") }?.substringAfter('=') ?: error("QQ 授权失败")
+        // 不能用带 CookieJar 的共享客户端：OkHttp 会拿 jar 里的 Cookie 整个替换掉手动设的 Cookie 头，
+        // jar 里还混着历史登录残留和已过期的 Cookie；这两步与 QQMusicApi 一样只带 check_sig 刚下发的那批
+        val noRedirect = QQMusicClient.http.newBuilder()
+            .cookieJar(CookieJar.NO_COOKIES).followRedirects(false).followSslRedirects(false).build()
+        val setCookies = noRedirect.newCall(qqWebRequest(checkUrl).build())
+            .execute().use { response -> response.headers("Set-Cookie") }
+        val cookies = latestCookies(setCookies)
+        val pSkey = cookies["p_skey"] ?: error("QQ 授权失败")
         val body = FormBody.Builder()
             .add("response_type", "code").add("client_id", QQ_THIRD_APP_ID)
             .add("redirect_uri", "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/")
@@ -133,7 +138,8 @@ object QQLoginApi {
             .add("g_tk", QQMusicClient.hash33(pSkey).toString()).add("auth_time", System.currentTimeMillis().toString())
             .add("ui", UUID.randomUUID().toString()).build()
         val location = noRedirect.newCall(
-            Request.Builder().url("https://graph.qq.com/oauth2.0/authorize").post(body).header("Cookie", cookies.joinToString("; ")).build(),
+            Request.Builder().url("https://graph.qq.com/oauth2.0/authorize").post(body).header("User-Agent", WEB_USER_AGENT)
+                .header("Cookie", cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }).build(),
         ).execute().use { it.header("Location").orEmpty() }
         val code = Regex("[?&]code=([^&]+)").find(location)?.groupValues?.get(1) ?: error("QQ 授权码获取失败")
         val data = QQMusicClient.cgiAndroidBlocking(
@@ -145,7 +151,7 @@ object QQLoginApi {
 
     private fun checkWechat(uuid: String): QQLoginState {
         val url = "https://lp.open.weixin.qq.com/connect/l/qrconnect".toHttpUrl("uuid" to uuid, "_" to System.currentTimeMillis().toString())
-        val text = QQMusicClient.http.newCall(Request.Builder().url(url).header("Referer", "https://open.weixin.qq.com/").build())
+        val text = QQMusicClient.http.newCall(Request.Builder().url(url).header("Referer", "https://open.weixin.qq.com/").header("User-Agent", WEB_USER_AGENT).build())
             .execute().use { it.body?.string().orEmpty() }
         val match = Regex("window\\.wx_errcode=(\\d+);window\\.wx_code='([^']*)'").find(text)
             ?: return QQLoginState.WAITING
@@ -185,6 +191,15 @@ object QQLoginApi {
         QQMusicClient.storeCredential(
             QQCredential(id, key, data.optString("encryptUin"), data.optInt("loginType", fallbackType), data.optString("nick"), data.optString("avatar")),
         )
+    }
+
+    /** Set-Cookie 里同名 Cookie 可能先清空（空值、过期）再下发真值：按名字取最后一个非空值。 */
+    internal fun latestCookies(setCookies: List<String>): Map<String, String> = buildMap {
+        setCookies.map { it.substringBefore(';') }.forEach { pair ->
+            val name = pair.substringBefore('=').trim()
+            val value = pair.substringAfter('=', "")
+            if (name.isNotEmpty() && value.isNotEmpty()) put(name, value)
+        }
     }
 
     internal fun qqQrToken(qrsig: String): Int = QQMusicClient.hash33(qrsig, seed = 0)

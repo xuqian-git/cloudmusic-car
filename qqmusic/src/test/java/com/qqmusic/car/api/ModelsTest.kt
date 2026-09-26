@@ -98,4 +98,12 @@ class ModelsTest {
         assertEquals("参数错误 (500)", QQMusicClient.errorMessage(500, JSONObject("""{"message":"参数错误"}""")))
         assertEquals("接口错误 (123)", QQMusicClient.errorMessage(123, JSONObject()))
     }
+
+    @Test
+    fun loginCookiesKeepLatestNonEmptyValue() {
+        val cookies = QQLoginApi.latestCookies(
+            listOf("p_skey=abc; Domain=graph.qq.com", "p_uin=o1; Path=/", "p_skey=; Expires=Thu, 01 Jan 1970 00:00:00 GMT", "p_uin=; Domain=qq.com"),
+        )
+        assertEquals(mapOf("p_skey" to "abc", "p_uin" to "o1"), cookies)
+    }
 }

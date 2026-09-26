@@ -15,7 +15,14 @@ object QQMusicApi {
     private val client = QQMusicClient
     private val tracks = ConcurrentHashMap<Long, Track>()
 
-    suspend fun logout() = client.clearAuthCookies()
+    /**
+     * 先通知服务器退出再清本地（同 QQMusicApi 的 LoginServer.Logout）。只清本地的话服务器仍记着这台设备已登录，
+     * 装过/重装过的设备越攒越多，最后新登录报 20279「登录设备数已达上限」。网络失败也照样清本地。
+     */
+    suspend fun logout() {
+        if (client.isLoggedIn) runCatching { client.cgiAndroid("music.login.LoginServer", "Logout") }
+        client.clearAuthCookies()
+    }
     suspend fun refreshLogin() = Unit
 
     suspend fun userAccount(): Profile? {
