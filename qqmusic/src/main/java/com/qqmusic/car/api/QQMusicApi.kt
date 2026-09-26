@@ -37,13 +37,19 @@ object QQMusicApi {
         val created = client.cgiAndroid(
             "music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", JSONObject().put("uin", uid.toString()),
         )
-        val mine = findArrays(created, "v_playlist", "playlist", "list").flatMap { it.objects() }.map(Playlist::parse)
-        val favorites = client.cgiAndroid(
-            "music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo",
-            JSONObject().put("uin", auth.encryptUin).put("offset", 0).put("size", 1000),
-        )
-        val saved = findArrays(favorites, "v_list", "v_playlist", "playlist", "list")
-            .flatMap { it.objects() }.map(Playlist::parse).filter { it.id > 0 && it.name.isNotBlank() }
+        val createdItems = findArrays(created, "v_playlist", "playlist", "list").flatMap { it.objects() }
+        // 自建列表里的创建者是字符串 uin，按接口语义直接记成自己；dirid 201 是「我喜欢」，已由下面的 liked 代表
+        val mine = createdItems.filter { it.optInt("dirid", it.optInt("dirId")) != 201 }
+            .map { Playlist.parse(it).copy(creatorId = uid) }
+        val favorites = runCatching {
+            client.cgiAndroid(
+                "music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo",
+                JSONObject().put("uin", auth.encryptUin).put("offset", 0).put("size", 1000),
+            )
+        }
+        val favItems = findArrays(favorites.getOrNull() ?: JSONObject(), "v_list", "v_playlist", "playlist", "list")
+            .flatMap { it.objects() }
+        val saved = favItems.map(Playlist::parse).filter { it.id > 0 && it.name.isNotBlank() }
         val liked = Playlist(0, "我喜欢的音乐", null, 0, 0, uid, auth.nickname, 5)
         return (listOf(liked) + mine + saved).distinctBy(Playlist::id)
     }

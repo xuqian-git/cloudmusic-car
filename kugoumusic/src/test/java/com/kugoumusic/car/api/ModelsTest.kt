@@ -57,6 +57,17 @@ class ModelsTest {
     }
 
     @Test
+    fun separatesCollectedPlaylistsByOriginalCreator() {
+        val own = JSONObject("""{"listid":3,"name":"通勤","list_create_userid":42}""")
+        val collected = JSONObject("""{"listid":4,"name":"别人的歌单","list_create_userid":7}""")
+        val likedFromOthers = JSONObject("""{"listid":2,"name":"我喜欢","list_create_userid":7}""")
+
+        assertEquals(false, KuGouMusicApi.isCollectedPlaylist(own, uid = 42, liked = false))
+        assertEquals(true, KuGouMusicApi.isCollectedPlaylist(collected, uid = 42, liked = false))
+        assertEquals(false, KuGouMusicApi.isCollectedPlaylist(likedFromOthers, uid = 42, liked = true))
+    }
+
+    @Test
     fun searchedPlaylistUsesGlobalCollectionGidForDetailRequests() {
         val item = JSONObject(
             """{"specialid":6409645,"gid":"collection_3_2132029040_287_0","img":"http://img/cover.png"}""",

@@ -49,7 +49,7 @@ object KuGouMusicApi {
     suspend fun userPlaylists(uid: Long): List<Playlist> {
         val auth = KuGouMusicClient.credential ?: return emptyList()
         val body = JSONObject().put("userid", uid).put("token", auth.token).put("total_ver", 979)
-            .put("type", 2).put("page", 1).put("pagesize", 30).toString()
+            .put("type", 2).put("page", 1).put("pagesize", 500).toString()
         val root = KuGouMusicClient.request(
             "/v7/get_all_list", "POST", mapOf("plat" to 1, "userid" to uid, "token" to auth.token), body,
             headers = mapOf("x-router" to "cloudlist.service.kugou.com"),
@@ -62,13 +62,29 @@ object KuGouMusicApi {
             val id = item.longAny("listid", "id").takeIf { it > 0 } ?: stableId(remote)
             val name = item.stringAny("name", "listname", "specialname").ifBlank { "歌单" }
             val coverUrl = item.stringAny("pic", "img", "imgurl", "cover", "cover_url").ifBlank { null }
-            playlists[id] = RemotePlaylist(remote.ifBlank { id.toString() }, Kind.USER, name = name, coverUrl = coverUrl)
+            val collected = isCollectedPlaylist(item, uid, index == likedIndex)
+            // 收藏的歌单/专辑在云列表里只是一个引用，歌曲要按原歌单的 gid 走公开歌单接口拉
+            val collectedKey = item.stringAny("list_create_gid", "global_collection_id")
+            playlists[id] = if (collected && collectedKey.isNotBlank()) {
+                RemotePlaylist(collectedKey, Kind.PUBLIC, name = name, coverUrl = coverUrl)
+            } else {
+                RemotePlaylist(remote.ifBlank { id.toString() }, Kind.USER, name = name, coverUrl = coverUrl)
+            }
             Playlist(
                 id, name, coverUrl,
-                item.longAny("count", "song_count", "total").toInt(), item.longAny("play_count"), uid,
-                auth.nickname, if (index == likedIndex) 5 else 0,
+                item.longAny("count", "song_count", "total").toInt(), item.longAny("play_count"),
+                if (collected) item.longAny("list_create_userid") else uid,
+                if (collected) item.stringAny("list_create_username") else auth.nickname,
+                if (index == likedIndex) 5 else 0,
             )
         }
+    }
+
+    /** 云列表里自建和收藏混在一起，按原创建者区分；「我喜欢」始终算自己的。 */
+    internal fun isCollectedPlaylist(item: JSONObject, uid: Long, liked: Boolean): Boolean {
+        if (liked) return false
+        val creator = item.longAny("list_create_userid")
+        return creator > 0 && creator != uid
     }
 
     suspend fun likedTrackIds(uid: Long): Set<Long> = userPlaylists(uid).firstOrNull(Playlist::isLikedSongs)
