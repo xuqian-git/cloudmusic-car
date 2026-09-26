@@ -17,8 +17,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
@@ -34,12 +32,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +63,21 @@ import com.kugoumusic.car.ui.pagePadding
 import com.kugoumusic.car.ui.theme.K
 import com.kugoumusic.car.ui.theme.LocalLandscape
 import java.util.Calendar
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material3.Text
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun PlaylistScreen(nav: Nav, route: Route.PlaylistPage) {
@@ -229,22 +240,16 @@ private fun TrackList(
     val current by PlayerHub.current.collectAsState()
     AccountStore.loggedIn.collectAsState().value // 登录状态变化时重新计算可播放性
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    var fabExpanded by remember { mutableStateOf(false) }
-
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
-            fabExpanded = true
+    val playingIndex = remember(tracks, current?.id) { tracks.indexOfFirst { it.id == current?.id } }
+    // 滚动/拖动时浮出快速滚动条和「定位正在播放」，停下 2 秒后收起
+    var toolsVisible by remember { mutableStateOf(false) }
+    var dragging by remember { mutableStateOf(false) }
+    LaunchedEffect(listState.isScrollInProgress, dragging) {
+        if (listState.isScrollInProgress || dragging) {
+            toolsVisible = true
         } else {
             delay(2000)
-            fabExpanded = false
-        }
-    }
-
-    LaunchedEffect(fabExpanded) {
-        if (fabExpanded && !listState.isScrollInProgress) {
-            delay(2000)
-            fabExpanded = false
+            toolsVisible = false
         }
     }
 
@@ -259,89 +264,165 @@ private fun TrackList(
                     PlayerHub.play(tracks, start = t, source = source, sourceId = sourceId)
                 }
             }
-            item { Spacer(Modifier.height(FAB_COLLAPSED_HEIGHT + 16.dp)) }
+            // 末尾留白：浮钮不压最后一行
+            item { Spacer(Modifier.height(LOCATE_SIZE + 16.dp)) }
         }
-        ScrollEdgeFab(
-            expanded = fabExpanded,
-            listState = listState,
-            itemCount = tracks.size,
-            onExpand = { fabExpanded = true },
-            scope = scope,
-        )
+        if (tracks.size >= FAST_SCROLL_MIN_TRACKS) {
+            FastScroller(listState, tracks, toolsVisible) { dragging = it }
+        }
+        if (playingIndex >= 0) {
+            LocatePlayingButton(toolsVisible, listState, playingIndex + 1) // +1：第 0 项是头部
+        }
     }
 }
 
-// 车机触控底线：收起态也要够手指点
-private val FAB_COLLAPSED_HEIGHT = 88.dp
+private const val FAST_SCROLL_MIN_TRACKS = 40
+private val LOCATE_SIZE = 80.dp
+private val THUMB_TOUCH_WIDTH = 64.dp
+private val THUMB_TOUCH_HEIGHT = 104.dp
 
 /**
- * 右下角浮动滚动按钮。
- * 收缩时贴在右边缘显示一个半露指示条；展开时显示上下三角形分别跳到列表顶部和底部。
+ * 右边缘可拖动的快速滚动条：按住滑块拖到哪，列表就跳到哪，左侧气泡显示「第 N 首 · 歌名」。
+ * 滚动位置只在 graphicsLayer 的绘制 lambda 里读，列表滚动不触发这里重组；拖动时只有气泡随序号重组。
  */
 @Composable
-private fun ScrollEdgeFab(
-    expanded: Boolean,
+private fun BoxScope.FastScroller(
     listState: LazyListState,
-    itemCount: Int,
-    onExpand: () -> Unit,
-    scope: kotlinx.coroutines.CoroutineScope,
+    tracks: List<Track>,
+    visible: Boolean,
+    onDragging: (Boolean) -> Unit,
 ) {
     val c = K.colors
-    val frosted = c.glass.copy(alpha = 0.65f)
-    val frostedBorder = c.glassBorder.copy(alpha = 0.4f)
-    val bottomOffset = LocalBottomInset.current + 16.dp
-    Box(Modifier.fillMaxSize()) {
-        // 收缩：右下角双三角形指示
-        AnimatedVisibility(
-            visible = !expanded,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = bottomOffset),
-        ) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val thumbHeightPx = with(density) { THUMB_TOUCH_HEIGHT.toPx() }
+    var trackHeightPx by remember { mutableIntStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragIndex by remember { mutableIntStateOf(0) }
+    // 拖动时滑块跟手的位置；不拖时由列表位置推算
+    var dragTopPx by remember { mutableFloatStateOf(0f) }
+    val placedTop = remember { floatArrayOf(0f) }
+    val range = { (trackHeightPx - thumbHeightPx).coerceAtLeast(1f) }
+
+    fun listTopPx(): Float {
+        val info = listState.layoutInfo
+        val scrollable = (info.totalItemsCount - info.visibleItemsInfo.size).coerceAtLeast(1)
+        return (listState.firstVisibleItemIndex.toFloat() / scrollable).coerceIn(0f, 1f) * range()
+    }
+
+    AnimatedVisibility(
+        visible = visible || dragging,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .fillMaxHeight()
+            .padding(top = 24.dp, bottom = LocalBottomInset.current + LOCATE_SIZE + 32.dp, end = 12.dp)
+            .onSizeChanged { trackHeightPx = it.height },
+    ) {
+        Box(Modifier.fillMaxHeight()) {
+            if (dragging) {
+                Box(
+                    Modifier
+                        .graphicsLayer { translationY = placedTop[0] }
+                        .height(THUMB_TOUCH_HEIGHT)
+                        .padding(end = THUMB_TOUCH_WIDTH + 8.dp)
+                        .align(Alignment.TopEnd),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    ScrollBubble({ dragIndex }, tracks)
+                }
+            }
             Box(
                 Modifier
-                    .size(width = 64.dp, height = FAB_COLLAPSED_HEIGHT)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(frosted)
-                    .border(1.dp, frostedBorder, RoundedCornerShape(14.dp))
-                    .pressable { onExpand() },
+                    .align(Alignment.TopEnd)
+                    .graphicsLayer {
+                        val top = if (dragging) dragTopPx else listTopPx()
+                        placedTop[0] = top
+                        translationY = top
+                    }
+                    .size(THUMB_TOUCH_WIDTH, THUMB_TOUCH_HEIGHT)
+                    .pointerInput(tracks) {
+                        var grabY = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = {
+                                grabY = it.y
+                                dragTopPx = placedTop[0]
+                                dragging = true
+                                onDragging(true)
+                            },
+                            onDragEnd = { dragging = false; onDragging(false) },
+                            onDragCancel = { dragging = false; onDragging(false) },
+                        ) { change, _ ->
+                            change.consume()
+                            // change.position 相对滑块当前摆放位置，所以用 placedTop 换算成轨道坐标
+                            dragTopPx = (placedTop[0] + change.position.y - grabY).coerceIn(0f, range())
+                            val index = ((dragTopPx / range()) * (tracks.size - 1)).roundToInt()
+                            if (index != dragIndex) {
+                                dragIndex = index
+                                scope.launch { listState.scrollToItem(index + 1) }
+                            }
+                        }
+                    },
                 contentAlignment = Alignment.Center,
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.secondary, modifier = Modifier.size(32.dp))
-                    Icon(Icons.Rounded.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(32.dp))
-                }
+                Box(
+                    Modifier
+                        .size(width = if (dragging) 16.dp else 10.dp, height = 80.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (dragging) c.accent else c.secondary.copy(alpha = 0.7f)),
+                )
             }
         }
-        // 展开：毛玻璃浮块（右下角，与收缩位置一致）
-        AnimatedVisibility(
-            visible = expanded,
-            enter = slideInHorizontally { it / 2 } + fadeIn(),
-            exit = slideOutHorizontally { it / 2 } + fadeOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = bottomOffset),
+    }
+}
+
+@Composable
+private fun ScrollBubble(index: () -> Int, tracks: List<Track>) {
+    val c = K.colors
+    val i = index().coerceIn(0, tracks.lastIndex)
+    Row(
+        Modifier
+            .widthIn(max = 420.dp)
+            .glass(RoundedCornerShape(20.dp), c.glass, c.glassBorder)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("第 ${i + 1} 首", color = c.accent, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        Spacer(Modifier.width(14.dp))
+        Text(tracks[i].name, color = c.label, fontSize = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 右下角「定位正在播放」：跳到当前歌曲所在行（行本身已高亮）。 */
+@Composable
+private fun BoxScope.LocatePlayingButton(visible: Boolean, listState: LazyListState, itemIndex: Int) {
+    val c = K.colors
+    val scope = rememberCoroutineScope()
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = LocalBottomInset.current + 16.dp),
+    ) {
+        Box(
+            Modifier
+                .size(LOCATE_SIZE)
+                .glass(CircleShape, c.glass, c.glassBorder)
+                .pressable {
+                    scope.launch {
+                        // 留两行上文；离得远直接跳，近的才动画，免得几千首滚半天
+                        val target = (itemIndex - 2).coerceAtLeast(0)
+                        if (abs(listState.firstVisibleItemIndex - target) > 30) {
+                            listState.scrollToItem(target)
+                        } else {
+                            listState.animateScrollToItem(target)
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center,
         ) {
-            Column(
-                Modifier
-                    .size(width = 72.dp, height = 148.dp)
-                    .glass(RoundedCornerShape(24.dp), frosted, frostedBorder),
-            ) {
-                Box(
-                    Modifier.weight(1f).fillMaxSize().pressable {
-                        scope.launch { listState.animateScrollToItem(0) }
-                    },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.accent, modifier = Modifier.size(44.dp))
-                }
-                Box(
-                    Modifier.weight(1f).fillMaxSize().pressable {
-                        scope.launch { listState.animateScrollToItem(itemCount + 1) }
-                    },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.KeyboardArrowDown, null, tint = c.accent, modifier = Modifier.size(44.dp))
-                }
-            }
+            Icon(Icons.Rounded.GraphicEq, "定位正在播放", tint = c.accent, modifier = Modifier.size(40.dp))
         }
     }
 }

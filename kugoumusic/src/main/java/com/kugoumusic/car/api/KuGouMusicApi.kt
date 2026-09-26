@@ -228,7 +228,7 @@ object KuGouMusicApi {
     private suspend fun loadUserPlaylistTracks(remote: RemotePlaylist, maxTracks: Int): List<Track> {
         val auth = KuGouMusicClient.credential ?: error("请先登录")
         val pageSize = 300
-        val result = ArrayDeque<Track>()
+        val result = ArrayList<Track>()
         var page = 1
         var scanned = 0
         while (scanned < USER_PLAYLIST_SCAN_LIMIT) {
@@ -244,8 +244,8 @@ object KuGouMusicApi {
             val data = root.optJSONObject("data") ?: root
             val chunk = data.arrayAny("songs", "songlist", "info", "list").objects()
             if (chunk.isEmpty()) break
-            chunk.forEach { result.addLast(Track.parse(it)) }
-            while (result.size > maxTracks) result.removeFirst()
+            chunk.mapTo(result, Track::parse)
+            if (result.size > maxTracks) result.subList(0, result.size - maxTracks).clear()
             scanned += chunk.size
             if (chunk.size < pageSize) break
             page++
