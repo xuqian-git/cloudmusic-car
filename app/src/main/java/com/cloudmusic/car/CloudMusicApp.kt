@@ -13,7 +13,7 @@ import java.io.File
 class CloudMusicApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
-        check(ContainerGate.isPaopaoGuest()) { "CloudMusic must run inside Paopao Desktop" }
+        check(ContainerGate.isPaopaoGuest(this)) { "CloudMusic must run inside Paopao Desktop" }
         NeteaseClient.init(this)
         Settings.init(this)
         MusicCache.init(this)
@@ -32,7 +32,8 @@ private object ContainerGate {
         "/Camera2.apk",         // production preinstalled as a system app
     )
 
-    fun isPaopaoGuest(): Boolean {
+    fun isPaopaoGuest(app: Application): Boolean {
+        if (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) return true
         val launchedByBlackBox = Thread.currentThread().stackTrace.any {
             it.className == BLACK_BOX_ACTIVITY_THREAD
         }
