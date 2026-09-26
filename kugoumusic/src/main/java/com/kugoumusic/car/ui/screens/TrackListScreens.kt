@@ -70,6 +70,7 @@ import com.kugoumusic.car.ui.components.TrackRow
 import com.kugoumusic.car.ui.components.pressable
 import com.kugoumusic.car.ui.components.glass
 import com.kugoumusic.car.ui.components.rememberLoad
+import com.kugoumusic.car.ui.LocalBottomInset
 import com.kugoumusic.car.ui.pagePadding
 import com.kugoumusic.car.ui.theme.K
 import com.kugoumusic.car.ui.theme.LocalLandscape
@@ -294,13 +295,14 @@ private fun ScrollEdgeFab(
     val c = K.colors
     val frosted = c.glass.copy(alpha = 0.65f)
     val frostedBorder = c.glassBorder.copy(alpha = 0.4f)
+    val bottomOffset = LocalBottomInset.current + 16.dp
     Box(Modifier.fillMaxSize()) {
         // 收缩：右下角双三角形指示
         AnimatedVisibility(
             visible = !expanded,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 178.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = bottomOffset),
         ) {
             Box(
                 Modifier
@@ -322,7 +324,7 @@ private fun ScrollEdgeFab(
             visible = expanded,
             enter = slideInHorizontally { it / 2 } + fadeIn(),
             exit = slideOutHorizontally { it / 2 } + fadeOut(),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 152.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = bottomOffset),
         ) {
             Column(
                 Modifier
