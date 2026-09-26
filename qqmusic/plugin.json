@@ -1,8 +1,8 @@
 {
   "id": "qqmusic",
   "name": "QQ 音乐",
-  "versionCode": 9,
-  "versionName": "1.0.8",
+  "versionCode": 10,
+  "versionName": "1.0.9",
   "entryClass": "com.qqmusic.car.plugin.QQMusicPlugin",
   "minHostApi": 2
 }

@@ -5,7 +5,7 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PROPS="$PROJECT_DIR/keystore.properties"
 CLASSES_JAR="$PROJECT_DIR/app/build/intermediates/runtime_app_classes_jar/release/bundleReleaseClassesToRuntimeJar/classes.jar"
 OUT_DIR="$PROJECT_DIR/app/build/outputs/plugin"
-OUT="$OUT_DIR/CloudMusic-v1.0.8.ppmusic"
+OUT="$OUT_DIR/CloudMusic-v1.0.9.ppmusic"
 
 property() {
   sed -n "s/^$1=//p" "$PROPS" | tail -n 1

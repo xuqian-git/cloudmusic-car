@@ -1,8 +1,8 @@
 {
   "id": "netease",
   "name": "云音乐",
-  "versionCode": 9,
-  "versionName": "1.0.8",
+  "versionCode": 10,
+  "versionName": "1.0.9",
   "entryClass": "com.cloudmusic.car.plugin.CloudMusicPlugin",
   "minHostApi": 2
 }

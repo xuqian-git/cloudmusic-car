@@ -73,6 +73,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.Text
@@ -292,6 +293,10 @@ private val THUMB_TOUCH_WIDTH = 64.dp
 private val THUMB_TOUCH_HEIGHT = 104.dp
 private val RAIL_TOP_PADDING = 24.dp
 
+// 跑跑桌面在分区左右边缘各留 32dp（按系统 density 算）的「边缘返回」手势区，按下即被桌面接管；
+// 滚动轨整条让到这条区域以内再多留 8dp，否则滑块按上去拖不动
+private const val HOST_EDGE_BACK_DP = 32f + 8f
+
 /**
  * 右边缘整条滚动轨：轨道从第一首歌那一行开始（头部还在屏幕上时让开头部），到底栏上方结束；
  * 按住滑块拖到哪，列表就跳到哪，屏幕中央大气泡显示封面、序号和歌名。
@@ -311,7 +316,9 @@ private fun BoxScope.ScrollRail(
     val topPadPx = with(density) { RAIL_TOP_PADDING.toPx() }
     val bottomPadPx = with(density) { (LocalBottomInset.current + 16.dp).toPx() }
     val railWidthPx = with(density) { 4.dp.toPx() }
-    val railEndPx = with(density) { 11.dp.toPx() }
+    val edgeInsetPx = LocalContext.current.resources.displayMetrics.density * HOST_EDGE_BACK_DP
+    val edgeInset = with(density) { edgeInsetPx.toDp() }
+    val railEndPx = with(density) { 11.dp.toPx() } + edgeInsetPx
     var heightPx by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
     var dragIndex by remember { mutableIntStateOf(0) }
@@ -359,6 +366,7 @@ private fun BoxScope.ScrollRail(
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
+                    .padding(end = edgeInset)
                     .graphicsLayer {
                         val top = if (dragging) dragTopPx else listThumbTop()
                         placedTop[0] = top
