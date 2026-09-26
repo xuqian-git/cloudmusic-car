@@ -96,7 +96,6 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlin.math.abs
@@ -371,8 +370,7 @@ internal fun secondaryButtons(source: NowPlayingSource, accent: Color, g: Grid, 
     val track by source.current.collectAsState()
     val liked by source.likedIds.collectAsState()
     val fm by source.isFm.collectAsState()
-    val shuffle by source.shuffle.collectAsState()
-    val repeat by source.repeatMode.collectAsState()
+    val playMode by source.playMode.collectAsState()
     val isLiked = track?.id?.let { it in liked } == true
     val size = 3f
     val touch = 7f
@@ -389,12 +387,15 @@ internal fun secondaryButtons(source: NowPlayingSource, accent: Color, g: Grid, 
     } else {
         listOf(
             like,
-            { IconButton(Icons.Rounded.Shuffle, g, size, touch, if (shuffle) accent else Dim, contentDescription = "随机播放") { source.toggleShuffle() } },
             {
                 IconButton(
-                    if (repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, g, size, touch,
-                    if (repeat != Player.REPEAT_MODE_OFF) accent else Dim, contentDescription = "循环",
-                ) { source.cycleRepeat() }
+                    when (playMode) {
+                        PlayModes.REPEAT_ONE -> Icons.Rounded.RepeatOne
+                        PlayModes.SHUFFLE -> Icons.Rounded.Shuffle
+                        else -> Icons.Rounded.Repeat
+                    }, g, size, touch,
+                    if (playMode != PlayModes.SEQUENTIAL) accent else Dim, contentDescription = "播放模式",
+                ) { source.cyclePlayMode() }
             },
             queue,
         )

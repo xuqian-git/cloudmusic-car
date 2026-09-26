@@ -4,6 +4,7 @@ import android.content.Context
 import com.qqmusic.car.api.Album
 import com.qqmusic.car.api.Artist
 import com.qqmusic.car.api.Track
+import com.paopao.music.nowplaying.PlayModes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,8 +15,6 @@ internal data class PlaybackSnapshot(
     val sourceName: String?,
     val sourceId: Long,
     val mode: PlayMode,
-    val shuffle: Boolean,
-    val repeatMode: Int,
 )
 
 internal object PlaybackSnapshotStore {
@@ -23,6 +22,7 @@ internal object PlaybackSnapshotStore {
     private const val KEY_QUEUE = "queue"
     private const val KEY_POSITION = "position_ms"
     private const val KEY_POSITION_MEDIA_ID = "position_media_id"
+    private const val KEY_PLAY_MODE = "play_mode"
 
     private lateinit var context: Context
 
@@ -36,8 +36,6 @@ internal object PlaybackSnapshotStore {
         sourceName: String?,
         sourceId: Long,
         mode: PlayMode,
-        shuffle: Boolean,
-        repeatMode: Int,
     ) {
         if (tracks.isEmpty() || currentIndex !in tracks.indices) return
         val root = JSONObject().apply {
@@ -46,8 +44,6 @@ internal object PlaybackSnapshotStore {
             put("sourceName", sourceName ?: JSONObject.NULL)
             put("sourceId", sourceId)
             put("mode", mode.name)
-            put("shuffle", shuffle)
-            put("repeatMode", repeatMode)
         }
         prefs().edit().putString(KEY_QUEUE, root.toString()).apply()
     }
@@ -58,6 +54,24 @@ internal object PlaybackSnapshotStore {
             .putString(KEY_POSITION_MEDIA_ID, mediaId)
             .putLong(KEY_POSITION, positionMs.coerceAtLeast(0L))
             .apply()
+    }
+
+    fun savePlayMode(mode: Int) {
+        prefs().edit().putInt(KEY_PLAY_MODE, mode).apply()
+    }
+
+    /** 旧版把随机 / 循环存在队列快照里，首次读取时迁移过来并落盘。 */
+    fun restorePlayMode(): Int {
+        val prefs = prefs()
+        if (prefs.contains(KEY_PLAY_MODE)) return prefs.getInt(KEY_PLAY_MODE, PlayModes.SEQUENTIAL)
+        val legacy = prefs.getString(KEY_QUEUE, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val mode = when {
+            legacy?.optBoolean("shuffle") == true -> PlayModes.SHUFFLE
+            legacy?.optInt("repeatMode") == androidx.media3.common.Player.REPEAT_MODE_ONE -> PlayModes.REPEAT_ONE
+            else -> PlayModes.SEQUENTIAL
+        }
+        savePlayMode(mode)
+        return mode
     }
 
     fun restore(): PlaybackSnapshot? = runCatching {
@@ -77,8 +91,6 @@ internal object PlaybackSnapshotStore {
             sourceName = root.optString("sourceName").takeIf { !root.isNull("sourceName") && it.isNotEmpty() },
             sourceId = root.optLong("sourceId"),
             mode = runCatching { PlayMode.valueOf(root.optString("mode")) }.getOrDefault(PlayMode.NORMAL),
-            shuffle = root.optBoolean("shuffle"),
-            repeatMode = root.optInt("repeatMode", androidx.media3.common.Player.REPEAT_MODE_ALL),
         )
     }.getOrNull()
 

@@ -29,8 +29,8 @@ private object PlayerSource : NowPlayingSource {
     override val queue = PlayerHub.queue.mapState { list -> list.map { (index, t) -> NowPlayingQueueItem(index, t.toNowPlaying()) } }
     override val isFm = PlayerHub.mode.mapState { it == PlayMode.FM }
     override val sourceName = PlayerHub.sourceName
-    override val shuffle = PlayerHub.shuffle
-    override val repeatMode = PlayerHub.repeatMode
+    override val playMode = PlayerHub.playMode
+    override val neighbors = PlayerHub.neighbors
     override val lyrics = PlayerHub.lyrics.mapState { lines ->
         lines.map { NowPlayingLyric(it.timeMs, it.text, it.translation, it.words) }
     }
@@ -45,8 +45,7 @@ private object PlayerSource : NowPlayingSource {
     override fun previous() { PlayerHub.previous() }
     override fun seekTo(ms: Long) { PlayerHub.seekTo(ms) }
     override fun jumpTo(index: Int) = PlayerHub.jumpTo(index)
-    override fun toggleShuffle() = PlayerHub.toggleShuffle()
-    override fun cycleRepeat() = PlayerHub.cycleRepeat()
+    override fun cyclePlayMode() = PlayerHub.cyclePlayMode()
     override fun fmTrash() = PlayerHub.fmTrash()
     override fun toggleLike(trackId: Long) {
         val track = PlayerHub.current.value?.takeIf { it.id == trackId }
