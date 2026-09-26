@@ -17,13 +17,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropUp
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,13 +38,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.ContentDrawScope
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -267,17 +259,20 @@ private fun TrackList(
                     PlayerHub.play(tracks, start = t, source = source, sourceId = sourceId)
                 }
             }
+            item { Spacer(Modifier.height(FAB_COLLAPSED_HEIGHT + 16.dp)) }
         }
         ScrollEdgeFab(
             expanded = fabExpanded,
             listState = listState,
             itemCount = tracks.size,
             onExpand = { fabExpanded = true },
-            onCollapse = { fabExpanded = false },
             scope = scope,
         )
     }
 }
+
+// 车机触控底线：收起态也要够手指点
+private val FAB_COLLAPSED_HEIGHT = 88.dp
 
 /**
  * 右下角浮动滚动按钮。
@@ -289,7 +284,6 @@ private fun ScrollEdgeFab(
     listState: LazyListState,
     itemCount: Int,
     onExpand: () -> Unit,
-    onCollapse: () -> Unit,
     scope: kotlinx.coroutines.CoroutineScope,
 ) {
     val c = K.colors
@@ -306,7 +300,7 @@ private fun ScrollEdgeFab(
         ) {
             Box(
                 Modifier
-                    .size(width = 40.dp, height = 64.dp)
+                    .size(width = 64.dp, height = FAB_COLLAPSED_HEIGHT)
                     .clip(RoundedCornerShape(14.dp))
                     .background(frosted)
                     .border(1.dp, frostedBorder, RoundedCornerShape(14.dp))
@@ -314,8 +308,8 @@ private fun ScrollEdgeFab(
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.secondary, modifier = Modifier.size(24.dp))
-                    Icon(Icons.Rounded.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(24.dp))
+                    Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.secondary, modifier = Modifier.size(32.dp))
+                    Icon(Icons.Rounded.KeyboardArrowDown, null, tint = c.secondary, modifier = Modifier.size(32.dp))
                 }
             }
         }
@@ -329,8 +323,7 @@ private fun ScrollEdgeFab(
             Column(
                 Modifier
                     .size(width = 72.dp, height = 148.dp)
-                    .glass(RoundedCornerShape(24.dp), frosted, frostedBorder)
-                    .pressable { onCollapse() },
+                    .glass(RoundedCornerShape(24.dp), frosted, frostedBorder),
             ) {
                 Box(
                     Modifier.weight(1f).fillMaxSize().pressable {
@@ -342,7 +335,7 @@ private fun ScrollEdgeFab(
                 }
                 Box(
                     Modifier.weight(1f).fillMaxSize().pressable {
-                        scope.launch { listState.animateScrollToItem(itemCount) }
+                        scope.launch { listState.animateScrollToItem(itemCount + 1) }
                     },
                     contentAlignment = Alignment.Center,
                 ) {

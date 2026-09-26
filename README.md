@@ -45,10 +45,10 @@ Release 使用正式签名：读取根目录 `keystore.properties` 与 `keystore
 
 | 构建命令 | 产物 | 说明 |
 |----------|------|------|
-| `./gradlew assembleRelease` | `app/build/outputs/apk/release/app-release.apk` | 标准独立 Android APK，有桌面图标和 Activity，可直接安装 |
-| `./tools/package-plugin.sh` | `app/build/outputs/plugin/CloudMusic-v1.0.4.ppmusic` | 跑跑桌面功能包：`plugin.json + classes.dex + icon.png` 的签名 JAR，不是 APK，只能被跑跑桌面验签加载 |
-| `./tools/package-qqmusic-plugin.sh` | `qqmusic/build/outputs/plugin/QQMusic-v1.0.3.ppmusic` | QQ 音乐功能包，同理 |
-| `./tools/package-kugoumusic-plugin.sh` | `kugoumusic/build/outputs/plugin/KuGouMusic-v1.0.3.ppmusic` | 酷狗音乐功能包，同理 |
+| `./gradlew assembleRelease` | `app/build/outputs/apk/release/app-release.apk` | 容器内运行的 APK：启动时校验宿主，不在跑跑桌面容器里会直接退出 |
+| `./tools/package-plugin.sh` | `app/build/outputs/plugin/CloudMusic-v<版本>.ppmusic` | 跑跑桌面功能包：`plugin.json + classes.dex + icon.png` 的签名 JAR，不是 APK，只能被跑跑桌面验签加载 |
+| `./tools/package-qqmusic-plugin.sh` | `qqmusic/build/outputs/plugin/QQMusic-v<版本>.ppmusic` | QQ 音乐功能包，同理 |
+| `./tools/package-kugoumusic-plugin.sh` | `kugoumusic/build/outputs/plugin/KuGouMusic-v<版本>.ppmusic` | 酷狗音乐功能包，同理 |
 
 `.ppmusic` 功能包没有 Activity / Manifest / 资源，只含 DEX + 元数据 + 图标。
 宿主通过反射调用 `CloudMusicPlugin.createView(context)` 挂载 ComposeView，
@@ -60,8 +60,8 @@ Compose 运行库由宿主提供，插件编译时的 Compose BOM 版本必须�
 日常开发完全不需要在车机上测试，分两种模式：
 
 1. **独立 APK 模式（推荐日常调试）**：`./gradlew assembleDebug` 生成 debug APK，
-   直接安装到手机或模拟器上运行。这是一个普通的 Android 音乐 App，UI、登录、播放、
-   搜索等功能全部可用，也可用 Android Studio 直接 Run。横竖屏自适应已内置。
+   直接安装到手机或模拟器上运行（debug 包跳过宿主校验，三个模块都一样；release 包不行）。
+   UI、登录、播放、搜索等功能全部可用，也可用 Android Studio 直接 Run。横竖屏自适应已内置。
 2. **功能包模式（.ppmusic）**：需要跑跑桌面作为宿主才能加载。手机上装有跑跑桌面
    （debug 或 release）即可将打包出的 `.ppmusic` 推入测试验签加载流程；
    没有宿主时 `.ppmusic` 文件本身无法安装和运行。

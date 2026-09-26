@@ -223,12 +223,15 @@ object KuGouMusicApi {
         }
     }
 
+    // 接口按添加时间从旧到新分页返回，而界面要新歌在前：必须翻到最后一页，只留最新的 maxTracks 首再倒序，
+    // 否则超长歌单只会拿到最老的一段。USER_PLAYLIST_SCAN_LIMIT 防止接口异常时无限翻页。
     private suspend fun loadUserPlaylistTracks(remote: RemotePlaylist, maxTracks: Int): List<Track> {
         val auth = KuGouMusicClient.credential ?: error("请先登录")
-        val result = mutableListOf<Track>()
+        val pageSize = 300
+        val result = ArrayDeque<Track>()
         var page = 1
-        while (result.size < maxTracks) {
-            val pageSize = minOf(300, maxTracks - result.size)
+        var scanned = 0
+        while (scanned < USER_PLAYLIST_SCAN_LIMIT) {
             val body = JSONObject().put("listid", remote.key).put("userid", auth.userId).put("token", auth.token)
                 .put("type", 0).put("page", page).put("pagesize", pageSize).put("area_code", 1)
                 .put("allplatform", 1).put("show_cover", 1).toString()
@@ -241,11 +244,13 @@ object KuGouMusicApi {
             val data = root.optJSONObject("data") ?: root
             val chunk = data.arrayAny("songs", "songlist", "info", "list").objects()
             if (chunk.isEmpty()) break
-            result += chunk.map(Track::parse)
+            chunk.forEach { result.addLast(Track.parse(it)) }
+            while (result.size > maxTracks) result.removeFirst()
+            scanned += chunk.size
             if (chunk.size < pageSize) break
             page++
         }
-        return register(result.distinctBy(Track::id)).asReversed()
+        return register(result.distinctBy(Track::id).asReversed())
     }
 
     private suspend fun rankDetail(id: Long, remote: RemotePlaylist, maxTracks: Int): PlaylistDetail {
@@ -413,6 +418,8 @@ object KuGouMusicApi {
             JSONObject(KuGouMusicClient.decryptCloud(response.body?.bytes() ?: byteArrayOf(), cipher.key))
         }
     }
+
+    private const val USER_PLAYLIST_SCAN_LIMIT = 30_000
 
     private fun register(items: List<Track>): List<Track> = items.also { list -> list.forEach { tracks[it.id] = it } }
 
