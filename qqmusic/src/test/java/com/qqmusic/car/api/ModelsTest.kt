@@ -35,15 +35,7 @@ class ModelsTest {
         assertEquals("AI00" to ".flac", qqFileFormat("master"))
     }
 
-    @Test
-    fun loginOnlyOffersQqAndWechat() {
-        assertEquals(listOf("QQ", "微信"), QQLoginType.entries.map(QQLoginType::label))
-    }
 
-    @Test
-    fun qqQrTokenUsesZeroSeedRequiredByPtlogin() {
-        assertEquals(1041100915, QQLoginApi.qqQrToken("test-qrsig"))
-    }
 
     @Test
     fun playlistSearchParsesAndroidCgiBody() {
@@ -99,11 +91,37 @@ class ModelsTest {
         assertEquals("接口错误 (123)", QQMusicClient.errorMessage(123, JSONObject()))
     }
 
+
     @Test
-    fun loginCookiesKeepLatestNonEmptyValue() {
-        val cookies = QQLoginApi.latestCookies(
-            listOf("p_skey=abc; Domain=graph.qq.com", "p_uin=o1; Path=/", "p_skey=; Expires=Thu, 01 Jan 1970 00:00:00 GMT", "p_uin=; Domain=qq.com"),
-        )
-        assertEquals(mapOf("p_skey" to "abc", "p_uin" to "o1"), cookies)
+    fun mqttPublishSurvivesSplitFramesAndKeepsUserProperties() {
+        val props = Mqtt.properties { userProperty("type", "scanned") }
+        val body = Mqtt.string("management.qrcode_login/abc") + props + """{"a":1}""".toByteArray()
+        val publish = Mqtt.packet(0x30, body)
+        assertEquals(null, Mqtt.readPacket(publish.copyOf(publish.size - 3)))
+        val packet = Mqtt.readPacket(publish + byteArrayOf(0xD0.toByte(), 0))!!
+        assertEquals(3, packet.type)
+        assertEquals(publish.size, packet.consumed)
+        val reader = Mqtt.Reader(packet.body)
+        assertEquals("management.qrcode_login/abc", reader.string())
+        assertEquals("scanned", reader.properties().userProperties["type"])
+        assertEquals("""{"a":1}""", String(reader.rest()))
+    }
+
+    @Test
+    fun mqttConnackRedirectReadsServerReference() {
+        val props = Mqtt.properties { string(0x1C, "10.0.0.1:443") }
+        val reader = Mqtt.Reader(byteArrayOf(0, 0x9D.toByte()) + props)
+        reader.byte()
+        assertEquals(0x9D, reader.byte())
+        assertEquals("10.0.0.1:443", reader.properties().strings[0x1C])
+        assertEquals("/ws/handshake/10.0.0.1:443", QQMobileLogin.redirectPath("/ws/handshake", "10.0.0.1:443"))
+        assertEquals("/ws/handshake/10.0.0.2:443", QQMobileLogin.redirectPath("/ws/handshake/10.0.0.1:443", "10.0.0.2:443"))
+    }
+
+    @Test
+    fun mqttRemainingLengthUsesVarInt() {
+        assertEquals(listOf(0xC1, 0x02), Mqtt.varInt(321).map { it.toInt() and 0xFF })
+        val big = Mqtt.packet(0x30, ByteArray(321))
+        assertEquals(321, Mqtt.readPacket(big)!!.body.size)
     }
 }

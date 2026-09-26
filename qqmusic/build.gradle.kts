@@ -14,8 +14,8 @@ android {
         applicationId = "com.qqmusic.car"
         minSdk = 28
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.0.12"
+        versionCode = 14
+        versionName = "1.0.13"
     }
 
     // 正式签名：读取工程根目录的 keystore.properties（不入库）；缺失时回退到 debug 签名
