@@ -100,7 +100,6 @@ import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlin.math.floor
 
@@ -453,11 +452,21 @@ internal fun LyricsList(
             }
         }
     }
+    // 正在跑的自动跟随数。换句时上一段跟随刚被取消、还没退出，isScrollInProgress 仍为 true，
+    // 只看它会把这一句漏掉，等下一句再猛追；是自己的跟随就照样接着滚
+    val following = remember { intArrayOf(0) }
     LaunchedEffect(lines) { state.scrollToItem(0) }
     LaunchedEffect(active, manualTick, lines) {
         val wait = 2500 - (System.currentTimeMillis() - manualAt)
         if (wait > 0) delay(wait)
-        if (active >= 0 && !state.isScrollInProgress) state.followLine(active)
+        if (active >= 0 && (!state.isScrollInProgress || following[0] > 0)) {
+            following[0]++
+            try {
+                state.followLine(active)
+            } finally {
+                following[0]--
+            }
+        }
     }
 
     BoxWithConstraints(modifier) {
@@ -467,31 +476,16 @@ internal fun LyricsList(
             }
             return@BoxWithConstraints
         }
-        val fade = Color.Black
         LazyColumn(
             state = state,
             contentPadding = PaddingValues(top = maxHeight * anchor, bottom = maxHeight),
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-                .drawWithContent {
-                    drawContent()
-                    // 上下边缘渐隐
-                    val edge = size.height * 0.12f
-                    drawRect(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(0f to Color.Transparent, 1f to fade, startY = 0f, endY = edge),
-                        size = Size(size.width, edge), blendMode = BlendMode.DstIn,
-                    )
-                    drawRect(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(0f to fade, 1f to Color.Transparent, startY = size.height - edge * 1.6f, endY = size.height),
-                        topLeft = Offset(0f, size.height - edge * 1.6f), size = Size(size.width, edge * 1.6f), blendMode = BlendMode.DstIn,
-                    )
-                },
+            modifier = Modifier.fillMaxSize(),
         ) {
             itemsIndexed(lines) { i, line ->
                 LyricRow(
                     line = line,
                     isActive = i == active,
+                    edgeAlpha = { state.edgeAlpha(i) },
                     clock = clock,
                     g = g,
                     textSize = textSize,
@@ -510,9 +504,23 @@ internal fun LyricsList(
 }
 
 /**
+ * 上下边缘渐隐：按行中心在视口里的位置整行调透明度。
+ * 不用整列表离屏 + DstIn 蒙版，那样滚动时每帧都要把整块区域离屏重画一遍，车机 GPU 吃不消。
+ */
+private fun LazyListState.edgeAlpha(index: Int): Float {
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return 1f
+    val h = info.viewportSize.height.toFloat()
+    if (h <= 0f) return 1f
+    val center = item.offset - info.viewportStartOffset + item.size / 2f
+    val edge = h * 0.12f
+    return minOf(center / edge, (h - center) / (edge * 1.6f)).coerceIn(0f, 1f)
+}
+
+/**
  * 把第 [index] 句平滑地送到锚点。换句时上一句在缩、这一句在放大，行高一直在变，
  * 一次算好终点的 animateScrollToItem 会在最后补一下位置，看着像顿了一下；
- * 这里每帧按实际位置追剩下距离的一截，行高怎么变都跟得上，收尾没有跳变。
+ * 这里每帧按实际位置用临界阻尼弹簧追，从静止缓起、缓停，行高怎么变都跟得上，收尾没有跳变。
  */
 private suspend fun LazyListState.followLine(index: Int) {
     // 离得远（手动翻走过）先用自带动画带回视野，再接着追
@@ -520,9 +528,11 @@ private suspend fun LazyListState.followLine(index: Int) {
     scroll {
         val start = withFrameNanos { it }
         var last = start
+        var velocity = 0f
         while (true) {
             val now = withFrameNanos { it }
-            val dt = (now - last) / 1_000_000_000f
+            // 掉帧时别一步迈太大
+            val dt = ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
             last = now
             val remaining = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.offset?.toFloat() ?: return@scroll
             // 行的缩放动画 450ms，过了它且已贴住锚点才收手
@@ -530,18 +540,21 @@ private suspend fun LazyListState.followLine(index: Int) {
                 scrollBy(remaining)
                 return@scroll
             }
-            scrollBy(remaining * (1f - exp(-dt / LYRIC_FOLLOW_TAU_S)))
+            velocity += (LYRIC_FOLLOW_OMEGA * LYRIC_FOLLOW_OMEGA * remaining - 2f * LYRIC_FOLLOW_OMEGA * velocity) * dt
+            scrollBy(velocity * dt)
         }
     }
 }
 
-private const val LYRIC_FOLLOW_TAU_S = 0.12f
+/** 弹簧角频率（rad/s），约 0.4s 基本到位。 */
+private const val LYRIC_FOLLOW_OMEGA = 14f
 private const val LYRIC_SETTLE_NS = 480_000_000L
 
 @Composable
 private fun LyricRow(
     line: NowPlayingLyric,
     isActive: Boolean,
+    edgeAlpha: () -> Float,
     clock: PlaybackClock,
     g: Grid,
     textSize: Float,
@@ -573,7 +586,9 @@ private fun LyricRow(
                 layout(p.width, h) { p.place(0, (h - p.height) / 2) }
             }
             .graphicsLayer {
-                this.alpha = alpha
+                this.alpha = alpha * edgeAlpha()
+                // 文字互不重叠，逐个绘制乘透明度即可，免得每个半透明行都开一块离屏缓冲
+                compositingStrategy = CompositingStrategy.ModulateAlpha
                 scaleX = scale
                 scaleY = scale
                 transformOrigin = TransformOrigin(if (centered) 0.5f else 0f, 0.5f)

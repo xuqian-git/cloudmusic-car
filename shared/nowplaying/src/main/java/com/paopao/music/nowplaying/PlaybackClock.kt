@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameMillis
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
 /**
  * 播放进度时钟。
@@ -40,10 +41,15 @@ fun rememberPlaybackClock(source: NowPlayingSource): PlaybackClock {
             if (playing && clock.frameClients > 0) {
                 withFrameMillis { now ->
                     if (needAnchor || now - polledAt >= 250) {
-                        needAnchor = false
-                        anchorPos = source.positionMs()
+                        val measured = source.positionMs()
+                        val predicted = anchorPos + (now - anchorAt)
+                        val drift = measured - predicted
+                        // 播放器报的位置本身有几十毫秒抖动，直接对齐会让填色每 250ms 跳一下；
+                        // 小偏差分几次慢慢吃掉，大偏差（拖动、切歌、卡顿）才直接对齐
+                        anchorPos = if (needAnchor || abs(drift) > 300) measured else predicted + drift / 4
                         anchorAt = now
                         polledAt = now
+                        needAnchor = false
                         clock.durationState.longValue = source.durationMs()
                     }
                     val dur = clock.durationState.longValue
