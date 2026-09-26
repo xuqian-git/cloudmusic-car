@@ -124,4 +124,18 @@ class ModelsTest {
         val big = Mqtt.packet(0x30, ByteArray(321))
         assertEquals(321, Mqtt.readPacket(big)!!.body.size)
     }
+
+    @Test
+    fun songSearchParserReadsMobileSearchItems() {
+        val response = JSONObject(
+            """{"body":{"item_song":[{"id":97773,"mid":"0039MnYb0qxYhV","title":"晴天","interval":269,"singer":[{"id":4558,"name":"周杰伦"}],"album":{"id":8220,"mid":"000MkMni19ClKG","title":"叶惠美"},"file":{"media_mid":"0039MnYb0qxYhV","size_128mp3":4303786}},{"id":0,"mid":"","title":""}]}}""",
+        )
+        val songs = QQMusicApi.parseSongSearch(response)
+
+        assertEquals(1, songs.size)
+        assertEquals("晴天", songs.single().name)
+        assertEquals("周杰伦", songs.single().artists.single().name)
+        assertEquals("叶惠美", songs.single().album.name)
+        assertEquals(269_000L, songs.single().durationMs)
+    }
 }
