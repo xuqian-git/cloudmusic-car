@@ -135,7 +135,7 @@ internal class QQAndroidIdentity(
         val request = Request.Builder()
             .url("https://u.y.qq.com/cgi-bin/musicu.fcg")
             .post(payload.toString().toRequestBody(JSON))
-            .header("User-Agent", "QQMusic 14090008(android ${Build.VERSION.RELEASE})")
+            .header("User-Agent", USER_AGENT)
             .build()
         val root = http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "QQ 音乐会话初始化失败 (${response.code})")
@@ -233,9 +233,11 @@ internal class QQAndroidIdentity(
         return digits.joinToString("") + ((10 - sum % 10) % 10)
     }
 
-    private companion object {
-        val JSON = "application/json; charset=utf-8".toMediaType()
-        const val RSA_PUBLIC_KEY =
+    companion object {
+        /** 与 comm 里的 cv=14090008 对应的 QQ 音乐安卓 App 请求头。 */
+        val USER_AGENT = "QQMusic 14090008(android ${Build.VERSION.RELEASE})"
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+        private const val RSA_PUBLIC_KEY =
             "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDEIxgwoutfwoJxcGQeedgP7FG9qaIuS0qzfR8gWkrkTZKM2iWHn2ajQpBRZjMSoSf6+KJGvar2ORhBfpDXyVtZCKpqLQ+FLkpncClKVIrBwv6PHyUvuCb0rIarmgDnzkfQAqVufEtR64iazGDKatvJ9y6B9NMbHddGSAUmRTCrHQIDAQAB"
     }
 }

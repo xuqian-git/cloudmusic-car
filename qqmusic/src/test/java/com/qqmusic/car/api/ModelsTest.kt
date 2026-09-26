@@ -91,4 +91,11 @@ class ModelsTest {
         assertFalse(QQMusicApi.isTransientSearchFailure(ApiException(401, "login expired")))
         assertFalse(QQMusicApi.isTransientSearchFailure(IllegalArgumentException("bad query")))
     }
+
+    @Test
+    fun cgiErrorsReadableWithCode() {
+        assertEquals("QQ 音乐判定请求异常（风控），请稍后再试 (2001)", QQMusicClient.errorMessage(2001, JSONObject()))
+        assertEquals("参数错误 (500)", QQMusicClient.errorMessage(500, JSONObject("""{"message":"参数错误"}""")))
+        assertEquals("接口错误 (123)", QQMusicClient.errorMessage(123, JSONObject()))
+    }
 }

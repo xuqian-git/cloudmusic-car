@@ -15,6 +15,9 @@ enum class QQLoginType(val label: String) {
 
 enum class QQLoginState { WAITING, SCANNED, DONE, EXPIRED, REFUSED }
 
+/** 扫码已确认、但换 QQ 音乐凭证失败：授权码是一次性的，不能拿同一个码再轮询重试，只能刷新二维码。 */
+class QQLoginExchangeException(cause: Throwable) : Exception(cause.message ?: "登录失败", cause)
+
 data class QQLoginQr(
     val type: QQLoginType,
     val image: ByteArray,
@@ -103,7 +106,7 @@ object QQLoginApi {
                 val callback = args.getOrNull(2).orEmpty()
                 val uin = Regex("[?&]uin=(.+?)&service").find(callback)?.groupValues?.get(1) ?: error("QQ 登录缺少 uin")
                 val sigx = Regex("[?&]ptsigx=(.+?)&s_url").find(callback)?.groupValues?.get(1) ?: error("QQ 登录缺少签名")
-                authorizeQq(uin, sigx)
+                exchange { authorizeQq(uin, sigx) }
                 QQLoginState.DONE
             }
             else -> error("QQ 扫码返回未知状态 (${args.firstOrNull().orEmpty()})")
@@ -152,15 +155,25 @@ object QQLoginApi {
             402 -> QQLoginState.EXPIRED
             403 -> QQLoginState.REFUSED
             405 -> {
-                val data = QQMusicClient.cgiAndroidBlocking(
-                    "music.login.LoginServer", "Login",
-                    JSONObject().put("code", match.groupValues[2]).put("strAppid", WX_APP_ID),
-                    mapOf("tmeLoginType" to 1),
-                )
-                saveCredential(data, 1)
+                exchange {
+                    val data = QQMusicClient.cgiAndroidBlocking(
+                        "music.login.LoginServer", "Login",
+                        JSONObject().put("code", match.groupValues[2]).put("strAppid", WX_APP_ID),
+                        mapOf("tmeLoginType" to 1),
+                    )
+                    saveCredential(data, 1)
+                }
                 QQLoginState.DONE
             }
             else -> QQLoginState.WAITING
+        }
+    }
+
+    private inline fun exchange(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            throw QQLoginExchangeException(e)
         }
     }
 

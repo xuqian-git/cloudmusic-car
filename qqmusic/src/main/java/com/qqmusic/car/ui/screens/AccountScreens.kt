@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.qqmusic.car.api.QQMusicApi
 import com.qqmusic.car.api.QQLoginApi
+import com.qqmusic.car.api.QQLoginExchangeException
 import com.qqmusic.car.api.QQLoginState
 import com.qqmusic.car.api.QQLoginType
 import com.qqmusic.car.api.sized
@@ -98,7 +99,12 @@ fun LoginScreen() {
             delay(2000)
             val checked = runCatching { QQLoginApi.check(session) }
             if (checked.isFailure) {
-                serverMessage = checked.exceptionOrNull()?.message
+                val error = checked.exceptionOrNull()
+                serverMessage = error?.message
+                if (error is QQLoginExchangeException) {
+                    state = QrState.ERROR
+                    return@LaunchedEffect
+                }
                 delay(2000)
                 continue
             }
@@ -179,7 +185,7 @@ fun LoginScreen() {
                 QrState.WAITING -> "打开${loginType.label} App\n扫一扫登录"
                 QrState.SCANNED -> "已扫码\n请在手机上确认登录"
                 QrState.EXPIRED -> "二维码已过期\n点击二维码刷新"
-                QrState.ERROR -> "网络异常\n点击重试"
+                QrState.ERROR -> "登录没有成功\n点击重试"
             }
             Label(status, 34.sp, c.label, FontWeight.SemiBold, maxLines = 3)
             serverMessage?.let {
