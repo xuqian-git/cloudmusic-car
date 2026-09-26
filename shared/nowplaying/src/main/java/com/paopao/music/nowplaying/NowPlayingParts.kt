@@ -345,14 +345,14 @@ internal fun MainControls(
     gap: Float = 4f,
 ) {
     val playing by source.isPlaying.collectAsState()
+    val playInteraction = remember { MutableInteractionSource() }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(g(gap)), verticalAlignment = Alignment.CenterVertically) {
         IconButton(Icons.Rounded.SkipPrevious, g, skipSize, skipSize * 1.5f, enabled = canPrevious, contentDescription = "上一首", onClick = onPrevious)
         Box(
             Modifier
                 .size(g(playSize))
-                .clip(CircleShape)
-                .background(Color.White)
-                .pressable { source.togglePlay() },
+                .background(Color.White, CircleShape)
+                .clickable(interactionSource = playInteraction, indication = null) { source.togglePlay() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
