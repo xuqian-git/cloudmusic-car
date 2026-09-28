@@ -1,6 +1,7 @@
 package com.paopao.music.nowplaying
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -457,7 +458,13 @@ internal fun LyricsList(
     // 只看它会把这一句漏掉，等下一句再猛追；是自己的跟随就照样接着滚
     val following = remember { intArrayOf(0) }
     LaunchedEffect(lines) { state.scrollToItem(0) }
-    LaunchedEffect(active, manualTick, lines) {
+    LaunchedEffect(active, manualTick, lines, visible) {
+        // 看不见（竖屏停在封面页）时直接跳到这一句：弹簧跟随每换一句要逐帧跑约半秒，
+        // 歌词页挪在屏幕外也照样重排重画，封面页因此比歌词页刷得还勤
+        if (!visible) {
+            if (active >= 0) state.scrollToItem(active)
+            return@LaunchedEffect
+        }
         val wait = 2500 - (System.currentTimeMillis() - manualAt)
         if (wait > 0) delay(wait)
         if (active >= 0 && (!state.isScrollInProgress || following[0] > 0)) {
@@ -565,8 +572,10 @@ private fun LyricRow(
     visible: Boolean,
     onClick: () -> Unit,
 ) {
-    val alpha by animateFloatAsState(if (isActive) 1f else 0.34f, tween(450), label = "lyricAlpha")
-    val scale by animateFloatAsState(if (isActive) 1f else inactiveScale, tween(450), label = "lyricScale")
+    // 看不见时换句不做渐变，免得屏幕外的行每帧重排
+    val spec: AnimationSpec<Float> = tween(if (visible) 450 else 0)
+    val alpha by animateFloatAsState(if (isActive) 1f else 0.34f, spec, label = "lyricAlpha")
+    val scale by animateFloatAsState(if (isActive) 1f else inactiveScale, spec, label = "lyricScale")
     val words = line.words
     val karaoke = isActive && words.isNotEmpty()
     if (karaoke && visible) {
