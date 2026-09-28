@@ -458,10 +458,17 @@ internal fun LyricsList(
     // 只看它会把这一句漏掉，等下一句再猛追；是自己的跟随就照样接着滚
     val following = remember { intArrayOf(0) }
     LaunchedEffect(lines) { state.scrollToItem(0) }
+    // 看不见期间错过的换句，回到歌词页时一次跳过去（首次出现也直接跳，不从第一句滚过来）
+    val stale = remember { booleanArrayOf(true) }
     LaunchedEffect(active, manualTick, lines, visible) {
-        // 看不见（竖屏停在封面页）时直接跳到这一句：弹簧跟随每换一句要逐帧跑约半秒，
-        // 歌词页挪在屏幕外也照样重排重画，封面页因此比歌词页刷得还勤
+        // 看不见（竖屏停在封面页）时换句什么都不做：弹簧跟随每句要逐帧跑约半秒，
+        // 直接 scrollToItem 也会把屏幕外整张列表同步重排一遍（每句一次 15–20ms 尖峰）
         if (!visible) {
+            stale[0] = true
+            return@LaunchedEffect
+        }
+        if (stale[0]) {
+            stale[0] = false
             if (active >= 0) state.scrollToItem(active)
             return@LaunchedEffect
         }
