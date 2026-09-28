@@ -62,7 +62,7 @@ fun rememberPlaybackClock(source: NowPlayingSource): PlaybackClock {
                 needAnchor = true
                 clock.positionState.longValue = source.positionMs()
                 clock.durationState.longValue = source.durationMs()
-                delay(250)
+                delay(POSITION_POLL_MS)
             }
         }
     }
@@ -71,3 +71,9 @@ fun rememberPlaybackClock(source: NowPlayingSource): PlaybackClock {
 
 /** 逐字填色的推进间隔：约每秒 16 次，填色仍连续向前，只是步子稍大。 */
 private const val KARAOKE_FRAME_MS = 55L
+
+/**
+ * 非逐字时读播放位置的间隔：每秒 2 次。插件画在车机桌面窗口里，进度条每动一下整个桌面都要重画；
+ * 进度条每秒只走几个像素，换句判定另有 250ms 提前量，2 次足够。
+ */
+private const val POSITION_POLL_MS = 500L
