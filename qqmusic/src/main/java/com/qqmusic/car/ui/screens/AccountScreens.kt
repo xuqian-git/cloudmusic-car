@@ -327,7 +327,7 @@ fun SettingsScreen(nav: Nav) {
 
         Label("关于", 30.sp, c.label, FontWeight.Bold, Modifier.padding(top = 30.dp, bottom = 10.dp))
         Label(
-            "QQ 音乐车机版 1.0.0\n根据公开 QQ 音乐接口行为独立实现。\n本应用为非官方客户端，与腾讯及 QQ 音乐无关。",
+            "QQ 音乐车机版 1.0.18\n根据公开 QQ 音乐接口行为独立实现。\n本应用为非官方客户端，与腾讯及 QQ 音乐无关。",
             21.sp, c.secondary, maxLines = 4,
         )
     }

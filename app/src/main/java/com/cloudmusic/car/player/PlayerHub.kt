@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -16,6 +17,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
@@ -64,6 +66,8 @@ object PlayerHub {
 
     private const val SCHEME = "cloudmusic"
     private const val URL_TTL_MS = 15 * 60 * 1000L
+    private const val PREFETCH_MIN_BUFFER_MS = 30_000L
+    private const val PREFETCH_RETRY_MS = 2 * 60 * 1000L
     private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -74,12 +78,21 @@ object PlayerHub {
     private data class ResolvedUrl(val url: String, val resolvedAt: Long, val cacheKey: String)
 
     private val urlCache = ConcurrentHashMap<String, ResolvedUrl>()
+    private lateinit var cacheDataSourceFactory: DataSource.Factory
+    private var prefetchJob: Job? = null
+    private var prefetchIds: List<Long> = emptyList()
+    @Volatile private var prefetchGeneration = 0L
+    private val prefetched = ConcurrentHashMap.newKeySet<String>()
+    private val prefetchFailures = ConcurrentHashMap<String, Long>()
+    private var prefetchSupported = false
 
     private val _current = MutableStateFlow<Track?>(null)
     val current: StateFlow<Track?> = _current.asStateFlow()
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
 
     /** 按歌单原顺序排列的队列（随机模式下也不打乱），以及当前歌曲在其中的位置。 */
     private val _queue = MutableStateFlow<List<Pair<Int, Track>>>(emptyList())
@@ -133,6 +146,16 @@ object PlayerHub {
             .setCache(MusicCache.audio)
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        cacheDataSourceFactory = cached
+        // Older hosts kept the factory names but obfuscated the return types in R8.
+        prefetchSupported = runCatching {
+            val dataSource = Class.forName("androidx.media3.datasource.DataSource")
+            val cachedSource = Class.forName("androidx.media3.datasource.cache.CacheDataSource")
+            DataSource.Factory::class.java.getMethod("createDataSource").returnType == dataSource &&
+                CacheDataSource.Factory::class.java.methods.any {
+                    it.name == "createDataSource" && it.returnType == cachedSource
+                }
+        }.getOrDefault(false)
         val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
         player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolving))
@@ -155,6 +178,7 @@ object PlayerHub {
                 delay(5_000)
                 updatePlaybackProgress()
                 persistPosition()
+                updatePrefetch()
             }
         }
     }
@@ -163,7 +187,9 @@ object PlayerHub {
     fun release() {
         if (!initialized) return
         cancelNetworkWait()
+        stopPrefetch()
         _status.value = null
+        _isBuffering.value = false
         connectivity = null
         runCatching(::persistPosition)
         lyricsJob?.cancel()
@@ -222,6 +248,97 @@ object PlayerHub {
             .setUri(Uri.parse(url))
             .setKey(cacheKey)
             .build()
+    }
+
+    /** Only read ahead when playback already has enough audio to stay ahead of the download. */
+    private fun updatePrefetch() {
+        if (!prefetchSupported) return
+        val bufferedAhead = player.bufferedPosition - player.currentPosition
+        val ready = player.playWhenReady && player.playbackState == Player.STATE_READY &&
+            (bufferedAhead >= PREFETCH_MIN_BUFFER_MS ||
+                (player.duration > 0 && player.bufferedPosition >= player.duration))
+        if (!ready) {
+            stopPrefetch()
+            return
+        }
+        val ids = upcomingTrackIds()
+        if (ids.isEmpty()) {
+            stopPrefetch()
+            return
+        }
+        // Quality and play order are part of the work identity. A new selection cancels the old download.
+        val workKey = ids.map { "$it:${Settings.quality.value.level}" }
+        if (prefetchJob?.isActive == true && prefetchIds == ids && prefetchQuality == Settings.quality.value.level) return
+        stopPrefetch()
+        prefetchIds = ids
+        prefetchQuality = Settings.quality.value.level
+        val generation = prefetchGeneration
+        prefetchJob = scope.launch(Dispatchers.IO) {
+            for ((index, id) in ids.withIndex()) {
+                if (generation != prefetchGeneration) break
+                val key = workKey[index]
+                if (key in prefetched) continue
+                val failedAt = prefetchFailures[key]
+                if (failedAt != null && System.currentTimeMillis() - failedAt < PREFETCH_RETRY_MS) continue
+                Log.i("CloudPlayer", "prefetch start id=$id quality=${Settings.quality.value.level}")
+                val success = runCatching { cacheWholeTrack(id, generation) }
+                    .onFailure { Log.w("CloudPlayer", "prefetch failed id=$id", it) }
+                    .getOrDefault(false)
+                if (generation == prefetchGeneration) {
+                    if (success) {
+                        Log.i("CloudPlayer", "prefetch complete id=$id")
+                        prefetchFailures.remove(key)
+                        prefetched.add(key)
+                    } else {
+                        prefetchFailures[key] = System.currentTimeMillis()
+                    }
+                }
+            }
+        }
+    }
+
+    private var prefetchQuality: String? = null
+
+    private fun stopPrefetch() {
+        prefetchGeneration++
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetchIds = emptyList()
+        prefetchQuality = null
+    }
+
+    private fun upcomingTrackIds(): List<Long> {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return emptyList()
+        val repeatMode = if (player.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ALL else player.repeatMode
+        var index = player.currentMediaItemIndex
+        val currentId = player.currentMediaItem?.mediaId
+        val found = LinkedHashSet<Long>()
+        repeat(timeline.windowCount.coerceAtMost(4)) {
+            index = timeline.getNextWindowIndex(index, repeatMode, player.shuffleModeEnabled)
+            if (index == C.INDEX_UNSET) return found.toList()
+            val id = player.getMediaItemAt(index).mediaId.toLongOrNull() ?: return@repeat
+            if (id.toString() != currentId) found.add(id)
+            if (found.size == 3) return found.toList()
+        }
+        return found.toList()
+    }
+
+    private fun cacheWholeTrack(id: Long, generation: Long): Boolean {
+        if (tracks[id] == null) return false
+        val spec = resolve(DataSpec(Uri.parse("$SCHEME://song/$id")))
+        if (spec.key == null) return false
+        val source = cacheDataSourceFactory.createDataSource()
+        return try {
+            source.open(spec)
+            val bytes = ByteArray(64 * 1024)
+            while (generation == prefetchGeneration) {
+                if (source.read(bytes, 0, bytes.size) == C.RESULT_END_OF_INPUT) return true
+            }
+            false
+        } finally {
+            source.close()
+        }
     }
 
     private fun mediaItem(track: Track): MediaItem {
@@ -602,6 +719,7 @@ object PlayerHub {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            stopPrefetch()
             cancelNetworkWait()
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) _status.value = null
             resetPlaybackProgress()
@@ -611,21 +729,37 @@ object PlayerHub {
 
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            _isBuffering.value = playWhenReady && player.playbackState == Player.STATE_BUFFERING
+            updatePrefetch()
             if (playWhenReady && waitingMediaId != null) cancelNetworkWait()
             if (playWhenReady && _status.value?.kind == "failures_paused") _status.value = null
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            stopPrefetch()
             rebuildQueue()
             if (_current.value?.id?.toString() != player.currentMediaItem?.mediaId) onTrackChanged()
             updateNeighbors()
         }
 
-        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) = updateNeighbors()
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            stopPrefetch()
+            updateNeighbors()
+        }
 
-        override fun onRepeatModeChanged(repeatMode: Int) = updateNeighbors()
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            stopPrefetch()
+            updateNeighbors()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            _isBuffering.value = player.playWhenReady && playbackState == Player.STATE_BUFFERING
+            updatePrefetch()
+        }
 
         override fun onPlayerError(error: PlaybackException) {
+            stopPrefetch()
+            _isBuffering.value = false
             val track = _current.value
             val id = player.currentMediaItem?.mediaId?.toLongOrNull()
             if (id != null) urlCache.keys.removeAll { it.startsWith("$id:") }

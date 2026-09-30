@@ -208,6 +208,11 @@ object QQMusicApi {
         QQRecentStore.record(track)
     }
 
+    /** Register queued songs for URL lookup without marking them as recently played. */
+    fun prepareQueuedTrack(track: Track) {
+        tracks[track.id] = track
+    }
+
     /**
      * 搜歌走 App 同款的 DoSearchForQQMusicMobile（与 QQMusicApi 一致）。
      * 老的网页接口 client_search_cp 在车机流量卡这类共享出口 IP 上会被间歇限流，只在新接口出错或没结果时兜底。

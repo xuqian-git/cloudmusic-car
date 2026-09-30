@@ -361,7 +361,7 @@ private fun PortraitLayout(
                     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
                         Spacer(Modifier.height(g(2f)))
                         Cover(source, t.coverUrl, cw, g(1.8f), elevation = g(3f))
-                        if (isCurrent) LyricTeaser(source, clock, accent, g, Modifier.width(cw).padding(top = g(2.4f)))
+                        if (isCurrent) LyricTeaser(source, clock, g, Modifier.width(cw).padding(top = g(2.4f)))
                         Spacer(Modifier.weight(1f))
                         // 歌名贴着进度条，和它左对齐
                         TitleBlock(t, g, modifier = Modifier.fillMaxWidth().padding(horizontal = g(6f)))
@@ -460,13 +460,12 @@ private fun PageDots(g: Grid, page: androidx.compose.runtime.FloatState, modifie
 
 /** 封面下露出正在唱的一句，提示左滑还有歌词页。 */
 @Composable
-private fun LyricTeaser(source: NowPlayingSource, clock: PlaybackClock, accent: Color, g: Grid, modifier: Modifier) {
+private fun LyricTeaser(source: NowPlayingSource, clock: PlaybackClock, g: Grid, modifier: Modifier) {
     val lines by source.lyrics.collectAsState()
     if (lines.isEmpty()) return
     val active by remember(lines) { derivedStateOf { lines.activeIndex(clock.position.longValue + LyricLeadMs) } }
     val text = lines.getOrNull(active)?.text ?: "前奏"
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        Text("♪ ", color = accent, fontSize = g.sp(2.45f))
         Text(text, color = Color.White.copy(alpha = 0.72f), fontSize = g.sp(2.45f), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
