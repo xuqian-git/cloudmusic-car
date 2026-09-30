@@ -172,7 +172,8 @@ object NeteaseApi {
         return WordLyricsParser.attach(
             lines, yrc,
             timeOf = { it.timeMs },
-            withWords = { line, w -> line.copy(words = w.words) },
+            textOf = { it.text },
+            withWords = { line, w -> line.copy(timeMs = w.timeMs, text = w.text, words = w.words) },
             create = { LyricLine(it.timeMs, it.text, null, it.words) },
         ) ?: lines
     }

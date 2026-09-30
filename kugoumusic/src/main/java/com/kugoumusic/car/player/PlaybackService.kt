@@ -7,6 +7,9 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.kugoumusic.car.MainActivity
 import com.kugoumusic.car.api.LyricsParser
+import com.paopao.music.nowplaying.KrcSource
+import com.paopao.music.nowplaying.METADATA_KEY_KRC_LYRIC
+import com.paopao.music.nowplaying.WordLyricsParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +40,9 @@ class PlaybackService : MediaSessionService() {
                 LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
                     extras.putString(METADATA_KEY_LYRIC, it)
                 }
+                extras.remove(METADATA_KEY_KRC_LYRIC)
+                WordLyricsParser.toKrc(lines.map { KrcSource(it.timeMs, it.text, it.words) })
+                    .takeIf(String::isNotEmpty)?.let { extras.putString(METADATA_KEY_KRC_LYRIC, it) }
                 mediaSession.setSessionExtras(extras)
             }
         }

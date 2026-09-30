@@ -14,6 +14,9 @@ import com.kugoumusic.car.data.Settings
 import com.kugoumusic.car.player.PlayerHub
 import com.kugoumusic.car.ui.AppRoot
 import com.kugoumusic.car.ui.theme.KuGouMusicTheme
+import com.paopao.music.nowplaying.KrcSource
+import com.paopao.music.nowplaying.METADATA_KEY_KRC_LYRIC
+import com.paopao.music.nowplaying.WordLyricsParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -79,6 +82,9 @@ class KuGouMusicPlugin {
                     LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
                         extras.putString(METADATA_KEY_LYRIC, it)
                     }
+                    extras.remove(METADATA_KEY_KRC_LYRIC)
+                    WordLyricsParser.toKrc(lines.map { KrcSource(it.timeMs, it.text, it.words) })
+                        .takeIf(String::isNotEmpty)?.let { extras.putString(METADATA_KEY_KRC_LYRIC, it) }
                     mediaSession.setSessionExtras(extras)
                 }
             }

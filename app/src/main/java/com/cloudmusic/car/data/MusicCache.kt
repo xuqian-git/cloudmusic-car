@@ -110,7 +110,7 @@ object MusicCache {
     }
 
     fun readLyrics(trackId: Long): List<LyricLine>? = runCatching {
-        val array = JSONArray(File(lyricDir, "$trackId.v2.json").readText())
+        val array = JSONArray(File(lyricDir, "$trackId.v3.json").readText())
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
@@ -128,7 +128,7 @@ object MusicCache {
 
     fun writeLyrics(trackId: Long, lines: List<LyricLine>) {
         if (lines.isEmpty()) return
-        val target = File(lyricDir, "$trackId.v2.json")
+        val target = File(lyricDir, "$trackId.v3.json")
         val temp = File(lyricDir, "$trackId.tmp")
         val array = JSONArray().apply {
             lines.forEach { line ->

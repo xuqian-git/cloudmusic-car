@@ -54,6 +54,7 @@ class WordLyricsParserTest {
         val merged = WordLyricsParser.attach(
             listOf(L(1200, "甲", "A")), words,
             timeOf = { it.t },
+            textOf = { it.text },
             withWords = { l, w -> l.copy(words = w.words) },
             create = { L(it.timeMs, it.text, null, it.words) },
         )!!
@@ -61,7 +62,7 @@ class WordLyricsParserTest {
         assertEquals("A", merged[0].tr)
         assertTrue(merged[0].words.isNotEmpty())
         assertEquals("乙", merged[1].text)
-        assertNull(WordLyricsParser.attach(listOf(L(0, "x", null)), emptyList(), { it.t }, { l, _ -> l }, { L(0, "", null) }))
+        assertNull(WordLyricsParser.attach(listOf(L(0, "x", null)), emptyList(), { it.t }, { it.text }, { l, _ -> l }, { L(0, "", null) }))
     }
 
     @Test
@@ -71,5 +72,39 @@ class WordLyricsParserTest {
         assertEquals(1f, litCharacters(words, 500), 0.001f)
         assertEquals(2.5f, litCharacters(words, 1500), 0.001f)
         assertEquals(3f, litCharacters(words, 5000), 0.001f)
+    }
+
+    @Test
+    fun attachDoesNotRepeatALineWhoseTimesDisagree() {
+        data class L(val t: Long, val text: String, val tr: String?, val words: List<LyricWord> = emptyList())
+        // 逐字和逐行同一句差了 1.4 秒；逐行多出一句开头的作词行、一句被切碎的行。
+        val words = WordLyricsParser.parseYrc("[10000,2000](10000,1000,0)你(11000,1000,0)好\n[20000,1000](20000,1000,0)再见")
+        val merged = WordLyricsParser.attach(
+            listOf(L(0, "作词：某人", null), L(11400, "你好", "hello"), L(15000, "碎片", null), L(20300, "再见", "bye")),
+            words,
+            timeOf = { it.t },
+            textOf = { it.text },
+            withWords = { l, w -> l.copy(t = w.timeMs, text = w.text, words = w.words) },
+            create = { L(it.timeMs, it.text, null, it.words) },
+        )!!
+        assertEquals(listOf("作词：某人", "你好", "再见"), merged.map { it.text })
+        assertEquals(listOf(0L, 10000L, 20000L), merged.map { it.t })
+        assertEquals("hello", merged[1].tr)
+        assertEquals("bye", merged[2].tr)
+    }
+
+    @Test
+    fun toKrcWritesRelativeWordOffsetsAndWholeLineForPlainLines() {
+        val krc = WordLyricsParser.toKrc(
+            listOf(
+                KrcSource(0, "作词：某人", emptyList()),
+                KrcSource(10000, "你好", listOf(LyricWord("你", 10000, 10500), LyricWord("好", 10600, 11000))),
+            ),
+        )
+        assertEquals("[0,10000]<0,10000,0>作词：某人\n[10000,1000]<0,500,0>你<600,400,0>好", krc)
+        val back = WordLyricsParser.parseKrc(krc)
+        assertEquals(listOf("作词：某人", "你好"), back.map { it.text })
+        assertEquals(10600L, back[1].words[1].startMs)
+        assertEquals("", WordLyricsParser.toKrc(listOf(KrcSource(0, "只有整句", emptyList()))))
     }
 }

@@ -34,8 +34,11 @@ import com.kugoumusic.car.data.AccountStore
 import com.kugoumusic.car.data.AudioQuality
 import com.kugoumusic.car.data.MusicCache
 import com.kugoumusic.car.data.Settings
+import com.paopao.music.nowplaying.KrcSource
+import com.paopao.music.nowplaying.METADATA_KEY_KRC_LYRIC
 import com.paopao.music.nowplaying.NowPlayingNeighbors
 import com.paopao.music.nowplaying.PlayModes
+import com.paopao.music.nowplaying.WordLyricsParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -652,6 +655,9 @@ object PlayerHub {
             LyricsParser.toLrc(lines).takeIf(String::isNotEmpty)?.let {
                 putString(METADATA_KEY_LYRIC, it)
             }
+            remove(METADATA_KEY_KRC_LYRIC)
+            WordLyricsParser.toKrc(lines.map { KrcSource(it.timeMs, it.text, it.words) })
+                .takeIf(String::isNotEmpty)?.let { putString(METADATA_KEY_KRC_LYRIC, it) }
         }
         val metadata = item.mediaMetadata.buildUpon().setExtras(extras).build()
         player.replaceMediaItem(index, item.buildUpon().setMediaMetadata(metadata).build())
