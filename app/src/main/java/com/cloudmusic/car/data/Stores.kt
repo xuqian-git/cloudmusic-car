@@ -7,9 +7,11 @@ import com.cloudmusic.car.api.NeteaseClient
 import com.cloudmusic.car.api.Playlist
 import com.cloudmusic.car.api.Profile
 import com.cloudmusic.car.api.Track
+import com.cloudmusic.car.player.PlayerHub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,17 +63,38 @@ object AccountStore {
 
     fun init() {
         _loggedIn.value = NeteaseClient.isLoggedIn
+        NeteaseClient.onSessionExpired = {
+            scope.launch {
+                clearAccount()
+                PlayerHub.toast("网易云登录已过期，请重新扫码登录")
+            }
+        }
         if (_loggedIn.value) {
             scope.launch {
-                NeteaseApi.refreshLogin()
+                NeteaseClient.refreshIfDue()
                 refresh()
+            }
+        }
+        // 进程常驻多日：每小时看一眼是否满 12 小时（休眠时 delay 不走，所以取地址前还会再查一次）
+        scope.launch {
+            while (true) {
+                delay(60 * 60 * 1000L)
+                NeteaseClient.refreshIfDue()
             }
         }
     }
 
     fun onLoginSucceeded() {
+        NeteaseClient.markLoginFresh()
         _loggedIn.value = NeteaseClient.isLoggedIn
         scope.launch { refresh() }
+    }
+
+    private fun clearAccount() {
+        _profile.value = null
+        _playlists.value = emptyList()
+        _likedIds.value = emptySet()
+        _loggedIn.value = false
     }
 
     suspend fun refresh() {
@@ -84,10 +107,7 @@ object AccountStore {
     fun logout() {
         scope.launch {
             NeteaseApi.logout()
-            _profile.value = null
-            _playlists.value = emptyList()
-            _likedIds.value = emptySet()
-            _loggedIn.value = false
+            clearAccount()
         }
     }
 

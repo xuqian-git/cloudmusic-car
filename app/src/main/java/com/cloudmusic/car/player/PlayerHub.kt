@@ -235,6 +235,8 @@ object PlayerHub {
                     .build()
             }
         }
+        // 过期的 MUSIC_U 取地址不报 301，只会悄悄降成试听/空地址，所以取地址前补一次到期续签
+        NeteaseClient.refreshIfDueBlocking()
         var quality = requestedQuality
         var result = NeteaseApi.songUrlBlocking(id, quality.level)
         if (result.url == null && quality != AudioQuality.STANDARD) {

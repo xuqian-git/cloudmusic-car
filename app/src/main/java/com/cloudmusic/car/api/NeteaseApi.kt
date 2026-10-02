@@ -32,10 +32,6 @@ object NeteaseApi {
         client.clearAuthCookies()
     }
 
-    suspend fun refreshLogin() {
-        runCatching { client.weapi("/login/token/refresh") }
-    }
-
     suspend fun userAccount(): Profile? {
         val p = client.weapi("/w/nuser/account/get").checked().optJSONObject("profile") ?: return null
         return Profile(p.optLong("userId"), p.optString("nickname"), p.optStringOrNull("avatarUrl"), p.optInt("vipType"))
