@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.cloudmusic.car.link.Codecs
+import com.paopao.music.link.EngineLink
 
 data class MusicCacheStats(
     val audioBytes: Long = 0,
@@ -40,6 +42,9 @@ object MusicCache {
     private lateinit var lyricDir: File
     private lateinit var artworkLoader: ImageLoader
     private var initialized = false
+    /** 拆进程后：音频缓存、歌词只在引擎（:music）里开，图片缓存只在界面里开，各管各的目录。 */
+    private val ownsAudio: Boolean get() = !EngineLink.isUi
+    private val ownsImages: Boolean get() = !EngineLink.isEngine
 
     lateinit var audio: SimpleCache
         private set
@@ -53,12 +58,14 @@ object MusicCache {
         val appContext = context.applicationContext
         root = File(appContext.cacheDir, "cloudmusic").apply { mkdirs() }
         lyricDir = File(root, "lyrics").apply { mkdirs() }
-        audio = SimpleCache(
-            File(root, "audio").apply { mkdirs() },
-            LeastRecentlyUsedCacheEvictor(AUDIO_MAX_BYTES),
-            StandaloneDatabaseProvider(appContext),
-        )
-        artworkLoader = ImageLoader.Builder(appContext)
+        if (ownsAudio) {
+            audio = SimpleCache(
+                File(root, "audio").apply { mkdirs() },
+                LeastRecentlyUsedCacheEvictor(AUDIO_MAX_BYTES),
+                StandaloneDatabaseProvider(appContext),
+            )
+        }
+        if (ownsImages) artworkLoader = ImageLoader.Builder(appContext)
             .okHttpClient(com.cloudmusic.car.api.NeteaseClient.http)
             .diskCache {
                 DiskCache.Builder()
@@ -69,7 +76,7 @@ object MusicCache {
             .crossfade(true)
             .build()
         initialized = true
-        _stats.value = snapshot()
+        if (ownsAudio) _stats.value = snapshot()
     }
 
     /**
@@ -78,7 +85,7 @@ object MusicCache {
      */
     @Synchronized
     fun ensureDiskRoom(keepKey: String?) {
-        if (!initialized) return
+        if (!initialized || !ownsAudio) return
         val dir = File(root, "audio")
         if (dir.usableSpace >= LOW_SPACE_BYTES) return
         val oldestFirst = runCatching {
@@ -100,7 +107,7 @@ object MusicCache {
     @Synchronized
     fun close() {
         if (!initialized) return
-        runCatching { audio.release() }
+        if (ownsAudio) runCatching { audio.release() }
         initialized = false
     }
 
@@ -148,17 +155,42 @@ object MusicCache {
     }
 
     suspend fun refreshStats() = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.fire(REFRESH_STATS)
+            return@withContext
+        }
         if (!initialized) return@withContext
         _stats.value = snapshot()
     }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
         if (!initialized) return@withContext
+        if (ownsImages) {
+            artworkLoader.memoryCache?.clear()
+            artworkLoader.diskCache?.clear()
+        }
+        if (EngineLink.isUi) {
+            // 图片清完再让引擎清音频、歌词并重算统计（统计里的图片大小是引擎量目录量出来的）。
+            runCatching { EngineLink.UiSide.call(CLEAR) }
+            return@withContext
+        }
         audio.keys.toList().forEach { key -> runCatching { audio.removeResource(key) } }
-        artworkLoader.memoryCache?.clear()
-        artworkLoader.diskCache?.clear()
         lyricDir.listFiles().orEmpty().forEach(File::delete)
-        _stats.value = MusicCacheStats()
+        _stats.value = snapshot()
+    }
+
+    private const val MIRROR_STATS = "cache.stats"
+    private const val REFRESH_STATS = "cache.refreshStats"
+    private const val CLEAR = "cache.clear"
+
+    fun mirrorFromEngine() {
+        EngineLink.UiSide.mirror(MIRROR_STATS, _stats, Codecs::stats)
+    }
+
+    fun serveToUi() {
+        EngineLink.EngineSide.mirror(MIRROR_STATS, stats, Codecs::stats)
+        EngineLink.EngineSide.command(REFRESH_STATS) { kotlinx.coroutines.runBlocking { refreshStats() }; null }
+        EngineLink.EngineSide.command(CLEAR) { kotlinx.coroutines.runBlocking { clear() }; null }
     }
 
     private fun snapshot() = MusicCacheStats(

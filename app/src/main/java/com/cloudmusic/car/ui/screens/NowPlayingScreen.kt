@@ -71,9 +71,8 @@ private object PlayerSource : NowPlayingSource {
     }
     override val likedIds = AccountStore.likedIds
 
-    override fun positionMs(): Long = PlayerHub.player.currentPosition
-    override fun durationMs(): Long =
-        PlayerHub.player.duration.takeIf { it > 0 } ?: PlayerHub.current.value?.durationMs ?: 0L
+    override fun positionMs(): Long = PlayerHub.positionMs()
+    override fun durationMs(): Long = PlayerHub.durationMs()
 
     override fun togglePlay() = PlayerHub.togglePlay()
     override fun next() = PlayerHub.next()

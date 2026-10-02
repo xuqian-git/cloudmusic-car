@@ -57,6 +57,7 @@ android {
     // 三个功能包共用的播放页源码，编进各自的 DEX（打包脚本只收本模块的类）
     sourceSets {
         getByName("main").java.srcDir("../shared/nowplaying/src/main/java")
+        getByName("main").java.srcDir("../shared/enginelink/src/main/java")
         getByName("test").java.srcDir("../shared/nowplaying/src/test/java")
     }
 }

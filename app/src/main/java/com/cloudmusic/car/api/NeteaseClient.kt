@@ -2,7 +2,9 @@ package com.cloudmusic.car.api
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Bundle
 import android.util.Log
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -13,7 +15,9 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
-class ApiException(val code: Int, message: String) : IOException(message)
+class ApiException(val code: Int, message: String) : IOException(message), EngineLink.CodedException {
+    override val errorCode: Int get() = code
+}
 
 /**
  * 网易云音乐传输层：管理 Cookie，执行 weapi / eapi 加密请求。
@@ -177,13 +181,58 @@ object NeteaseClient {
         path: String,
         payload: JSONObject = JSONObject(),
         cookieOverrides: Map<String, String> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) { weapiBlocking(path, payload, cookieOverrides) }
+    ): JSONObject = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) remote("weapi", path, payload, cookieOverrides) else weapiBlocking(path, payload, cookieOverrides)
+    }
 
     suspend fun eapi(
         path: String,
         payload: JSONObject = JSONObject(),
         cookieOverrides: Map<String, String> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) { eapiBlocking(path, payload, cookieOverrides) }
+    ): JSONObject = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) remote("eapi", path, payload, cookieOverrides) else eapiBlocking(path, payload, cookieOverrides)
+    }
+
+    /**
+     * 界面进程不持有 Cookie：请求整份交给 :music 里的引擎发，Cookie、续签、退登都只在那边发生。
+     * 引擎报的业务码原样还原成 [ApiException]，界面里的错误提示不变。
+     */
+    private fun remote(kind: String, path: String, payload: JSONObject, cookieOverrides: Map<String, String>): JSONObject {
+        val args = Bundle().apply {
+            putString(NET_KIND, kind)
+            putString(NET_PATH, path)
+            putString(NET_COOKIES, JSONObject(cookieOverrides).toString())
+            EngineLink.putText(this, payload.toString())
+        }
+        val reply = try {
+            EngineLink.UiSide.call(NET_COMMAND, args)
+        } catch (e: EngineLink.EngineCallException) {
+            throw ApiException(e.code, e.message.orEmpty())
+        } catch (e: EngineLink.EngineUnavailable) {
+            throw IOException(e.message, e)
+        }
+        val text = EngineLink.readText(reply).orEmpty()
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    }
+
+    /** 引擎侧：接住界面转来的请求。 */
+    fun serveRemote(args: Bundle): Bundle {
+        val path = requireNotNull(args.getString(NET_PATH))
+        val payload = JSONObject(EngineLink.readText(args) ?: "{}")
+        val overrides = JSONObject(args.getString(NET_COOKIES) ?: "{}").let { o ->
+            o.keys().asSequence().associateWith { o.getString(it) }
+        }
+        val result = when (args.getString(NET_KIND)) {
+            "eapi" -> eapiBlocking(path, payload, overrides)
+            else -> weapiBlocking(path, payload, overrides)
+        }
+        return EngineLink.text(result.toString())
+    }
+
+    const val NET_COMMAND = "net.request"
+    private const val NET_KIND = "kind"
+    private const val NET_PATH = "path"
+    private const val NET_COOKIES = "cookies"
 
     fun weapiBlocking(
         path: String,

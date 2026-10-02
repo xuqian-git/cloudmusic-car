@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -34,6 +35,8 @@ import com.cloudmusic.car.data.AccountStore
 import com.cloudmusic.car.data.AudioQuality
 import com.cloudmusic.car.data.MusicCache
 import com.cloudmusic.car.data.Settings
+import com.cloudmusic.car.link.Codecs
+import com.paopao.music.link.EngineLink
 import com.paopao.music.nowplaying.KrcSource
 import com.paopao.music.nowplaying.METADATA_KEY_KRC_LYRIC
 import com.paopao.music.nowplaying.NowPlayingNeighbors
@@ -58,6 +61,25 @@ import java.util.concurrent.ConcurrentHashMap
 enum class PlayMode { NORMAL, FM, HEARTBEAT }
 
 data class PlaybackNotice(val kind: String, val text: String)
+
+/**
+ * 播放进度快照：[atElapsedMs]（elapsedRealtime）那一刻在 [positionMs]，[advancing] 时按 [speed] 往前走。
+ * 界面进程拿不到播放器，进度条和逐字歌词按它本地外推，引擎只在状态变化时推一次。
+ */
+data class PlaybackPosition(
+    val positionMs: Long,
+    val durationMs: Long,
+    val atElapsedMs: Long,
+    val advancing: Boolean,
+    val speed: Float,
+) {
+    fun now(): Long {
+        if (!advancing) return positionMs
+        val moved = ((SystemClock.elapsedRealtime() - atElapsedMs) * speed).toLong()
+        val at = positionMs + moved.coerceAtLeast(0)
+        return if (durationMs > 0) at.coerceAtMost(durationMs) else at
+    }
+}
 
 /**
  * 全局播放器。队列直接交给 ExoPlayer（通知栏、方向盘按键的上一首/下一首因此天然可用），
@@ -121,6 +143,27 @@ object PlayerHub {
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
+
+    private val _position = MutableStateFlow(PlaybackPosition(0, 0, 0, false, 1f))
+
+    /** 当前播放位置；界面进程里按引擎推来的快照外推。 */
+    fun positionMs(): Long = if (EngineLink.isUi) _position.value.now() else player.currentPosition
+
+    fun durationMs(): Long {
+        val known = if (EngineLink.isUi) _position.value.durationMs else player.duration
+        return known.takeIf { it > 0 } ?: _current.value?.durationMs ?: 0L
+    }
+
+    private fun publishPosition() {
+        if (!initialized) return
+        _position.value = PlaybackPosition(
+            positionMs = player.currentPosition,
+            durationMs = player.duration.takeIf { it != C.TIME_UNSET } ?: 0L,
+            atElapsedMs = SystemClock.elapsedRealtime(),
+            advancing = player.isPlaying,
+            speed = player.playbackParameters.speed,
+        )
+    }
 
     private var sourceId = 0L
     private var lyricsJob: Job? = null
@@ -214,10 +257,12 @@ object PlayerHub {
         player.setMediaItems(snapshot.tracks.map(::mediaItem), snapshot.currentIndex, snapshot.positionMs)
         player.prepare()
         player.pause()
+        publishPosition()
     }
 
     fun toast(message: String) {
         _messages.tryEmit(message)
+        if (EngineLink.isEngine) EngineLink.EngineSide.send(EVENT_TOAST, Bundle().apply { putString("text", message) })
     }
 
     // ---------- 地址解析（运行在加载线程） ----------
@@ -376,6 +421,17 @@ object PlayerHub {
         sourceId: Long = 0,
         mode: PlayMode = PlayMode.NORMAL,
     ) {
+        if (EngineLink.isUi) {
+            remote(CMD_PLAY) {
+                EngineLink.putText(this, Codecs.tracks(list))
+                putLong("start", start?.id ?: -1L)
+                putBoolean("shuffle", shuffle)
+                putString("source", source)
+                putLong("sourceId", sourceId)
+                putString("mode", mode.name)
+            }
+            return
+        }
         if (start != null) {
             AccountStore.unplayableReason(start)?.let {
                 toast("《${start.name}》无法播放：$it")
@@ -406,6 +462,7 @@ object PlayerHub {
     }
 
     fun startFm() {
+        if (EngineLink.isUi) { remote(CMD_START_FM); return }
         scope.launch {
             runCatching { NeteaseApi.personalFm() }
                 .onSuccess { play(it, source = "私人 FM", mode = PlayMode.FM) }
@@ -414,6 +471,7 @@ object PlayerHub {
     }
 
     fun startHeartbeat() {
+        if (EngineLink.isUi) { remote(CMD_HEARTBEAT); return }
         val liked = AccountStore.likedPlaylist
         val seed = AccountStore.likedIds.value.randomOrNull()
         if (liked == null || seed == null) {
@@ -430,6 +488,7 @@ object PlayerHub {
     // ---------- 控制 ----------
 
     fun togglePlay() {
+        if (EngineLink.isUi) { remote(CMD_TOGGLE); return }
         if (waitingMediaId != null) cancelNetworkWait()
         if (player.isPlaying) {
             player.pause()
@@ -442,6 +501,7 @@ object PlayerHub {
     }
 
     fun next() {
+        if (EngineLink.isUi) { remote(CMD_NEXT); return }
         cancelNetworkWait()
         _status.value = null
         val index = manualNextIndex()
@@ -449,6 +509,7 @@ object PlayerHub {
     }
 
     fun previous() {
+        if (EngineLink.isUi) { remote(CMD_PREVIOUS); return }
         cancelNetworkWait()
         _status.value = null
         val index = manualPreviousIndex()
@@ -456,11 +517,18 @@ object PlayerHub {
     }
 
     fun seekTo(ms: Long) {
+        if (EngineLink.isUi) {
+            // 先把本地快照挪过去，进度条不会在引擎回话之前弹回原处。
+            _position.value = _position.value.copy(positionMs = ms, atElapsedMs = SystemClock.elapsedRealtime())
+            remote(CMD_SEEK) { putLong("ms", ms) }
+            return
+        }
         cancelNetworkWait()
         player.seekTo(ms)
     }
 
     fun jumpTo(index: Int) {
+        if (EngineLink.isUi) { remote(CMD_JUMP) { putInt("index", index) }; return }
         cancelNetworkWait()
         _status.value = null
         consecutiveFailures = 0
@@ -470,6 +538,7 @@ object PlayerHub {
 
     /** 顺序播放 → 单曲循环 → 随机播放 → 顺序播放，持久化后重启仍保持。 */
     fun cyclePlayMode() {
+        if (EngineLink.isUi) { remote(CMD_CYCLE_MODE); return }
         cancelNetworkWait()
         setPlayMode(
             when (_playMode.value) {
@@ -502,6 +571,7 @@ object PlayerHub {
 
     /** 私人 FM：不喜欢当前歌曲并跳到下一首。 */
     fun fmTrash() {
+        if (EngineLink.isUi) { remote(CMD_FM_TRASH); return }
         val track = _current.value ?: return
         scope.launch { runCatching { NeteaseApi.fmTrash(track.id) } }
         next()
@@ -718,11 +788,84 @@ object PlayerHub {
         }
     }
 
+    // ---------- 拆进程：界面 ↔ 引擎 ----------
+
+    private const val EVENT_TOAST = "player.toast"
+    private const val CMD_PLAY = "player.play"
+    private const val CMD_START_FM = "player.startFm"
+    private const val CMD_HEARTBEAT = "player.startHeartbeat"
+    private const val CMD_TOGGLE = "player.togglePlay"
+    private const val CMD_NEXT = "player.next"
+    private const val CMD_PREVIOUS = "player.previous"
+    private const val CMD_SEEK = "player.seekTo"
+    private const val CMD_JUMP = "player.jumpTo"
+    private const val CMD_CYCLE_MODE = "player.cyclePlayMode"
+    private const val CMD_FM_TRASH = "player.fmTrash"
+
+    private inline fun remote(method: String, args: Bundle.() -> Unit = {}) {
+        EngineLink.UiSide.fire(method, Bundle().apply(args))
+    }
+
+    /** 界面进程：播放状态全部由引擎推过来。 */
+    fun mirrorFromEngine() {
+        val ui = EngineLink.UiSide
+        ui.mirror("player.current", _current, Codecs::trackOrNull)
+        ui.mirror("player.isPlaying", _isPlaying) { it.toBoolean() }
+        ui.mirror("player.isBuffering", _isBuffering) { it.toBoolean() }
+        ui.mirror("player.queue", _queue, Codecs::queue)
+        ui.mirror("player.mode", _mode, Codecs::mode)
+        ui.mirror("player.sourceName", _sourceName) { it.takeIf { s -> s.isNotEmpty() } }
+        ui.mirror("player.playMode", _playMode) { it.toInt() }
+        ui.mirror("player.neighbors", _neighbors, Codecs::neighbors)
+        ui.mirror("player.lyrics", _lyrics, Codecs::lyrics)
+        ui.mirror("player.status", _status, Codecs::notice)
+        ui.mirror("player.position", _position, Codecs::position)
+        ui.on(EVENT_TOAST) { data -> data.getString("text")?.let { _messages.tryEmit(it) } }
+    }
+
+    fun serveToUi() {
+        val engine = EngineLink.EngineSide
+        engine.mirror("player.current", current, Codecs::trackOrNull)
+        engine.mirror("player.isPlaying", isPlaying) { it.toString() }
+        engine.mirror("player.isBuffering", isBuffering) { it.toString() }
+        engine.mirror("player.queue", queue, Codecs::queue)
+        engine.mirror("player.mode", mode, Codecs::mode)
+        engine.mirror("player.sourceName", sourceName) { it.orEmpty() }
+        engine.mirror("player.playMode", playMode) { it.toString() }
+        engine.mirror("player.neighbors", neighbors, Codecs::neighbors)
+        engine.mirror("player.lyrics", lyrics, Codecs::lyrics)
+        engine.mirror("player.status", status, Codecs::notice)
+        engine.mirror("player.position", _position, Codecs::position)
+        fun main(name: String, block: (Bundle) -> Unit) = engine.command(name) { args -> engine.onMain { block(args) }; null }
+        main(CMD_PLAY) { args ->
+            val list = Codecs.tracks(EngineLink.readText(args) ?: "[]")
+            val startId = args.getLong("start", -1L)
+            play(
+                list,
+                start = list.firstOrNull { it.id == startId },
+                shuffle = args.getBoolean("shuffle"),
+                source = args.getString("source"),
+                sourceId = args.getLong("sourceId"),
+                mode = PlayMode.valueOf(args.getString("mode") ?: PlayMode.NORMAL.name),
+            )
+        }
+        main(CMD_START_FM) { startFm() }
+        main(CMD_HEARTBEAT) { startHeartbeat() }
+        main(CMD_TOGGLE) { togglePlay() }
+        main(CMD_NEXT) { next() }
+        main(CMD_PREVIOUS) { previous() }
+        main(CMD_SEEK) { seekTo(it.getLong("ms")) }
+        main(CMD_JUMP) { jumpTo(it.getInt("index")) }
+        main(CMD_CYCLE_MODE) { cyclePlayMode() }
+        main(CMD_FM_TRASH) { fmTrash() }
+    }
+
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (!isPlaying && _isPlaying.value) updatePlaybackProgress(includeStopped = true)
             resetPlaybackProgress()
             _isPlaying.value = isPlaying
+            publishPosition()
             persistPosition()
         }
 
@@ -733,7 +876,17 @@ object PlayerHub {
             resetPlaybackProgress()
             onTrackChanged(finishedPrevious = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
             updateNeighbors()
+            publishPosition()
         }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) = publishPosition()
+
+        override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) =
+            publishPosition()
 
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -762,6 +915,7 @@ object PlayerHub {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             _isBuffering.value = player.playWhenReady && playbackState == Player.STATE_BUFFERING
+            publishPosition()
             updatePrefetch()
         }
 

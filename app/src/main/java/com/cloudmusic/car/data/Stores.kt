@@ -2,6 +2,9 @@ package com.cloudmusic.car.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Bundle
+import com.cloudmusic.car.link.Codecs
+import com.paopao.music.link.EngineLink
 import com.cloudmusic.car.api.NeteaseApi
 import com.cloudmusic.car.api.NeteaseClient
 import com.cloudmusic.car.api.Playlist
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 enum class AudioQuality(val level: String, val label: String, val detail: String) {
     STANDARD("standard", "标准", "128k，最省流量"),
@@ -38,7 +42,30 @@ object Settings {
 
     fun setQuality(q: AudioQuality) {
         _quality.value = q
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.fire(SET_QUALITY, Bundle().apply { putString("level", q.level) })
+            return
+        }
         prefs.edit().putString("quality", q.level).apply()
+    }
+
+    private const val MIRROR_QUALITY = "settings.quality"
+    private const val SET_QUALITY = "settings.setQuality"
+
+    /** 界面进程：音质由引擎持有，这里只收镜像。 */
+    fun mirrorFromEngine() {
+        EngineLink.UiSide.mirror(MIRROR_QUALITY, _quality) { level ->
+            AudioQuality.entries.firstOrNull { it.level == level } ?: AudioQuality.EXHIGH
+        }
+    }
+
+    fun serveToUi() {
+        EngineLink.EngineSide.mirror(MIRROR_QUALITY, quality) { it.level }
+        EngineLink.EngineSide.command(SET_QUALITY) { args ->
+            val level = args.getString("level")
+            AudioQuality.entries.firstOrNull { it.level == level }?.let { q -> EngineLink.EngineSide.onMain { setQuality(q) } }
+            null
+        }
     }
 }
 
@@ -85,6 +112,10 @@ object AccountStore {
     }
 
     fun onLoginSucceeded() {
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.fire(LOGIN_SUCCEEDED)
+            return
+        }
         NeteaseClient.markLoginFresh()
         _loggedIn.value = NeteaseClient.isLoggedIn
         scope.launch { refresh() }
@@ -105,6 +136,10 @@ object AccountStore {
     }
 
     fun logout() {
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.fire(LOGOUT)
+            return
+        }
         scope.launch {
             NeteaseApi.logout()
             clearAccount()
@@ -118,10 +153,52 @@ object AccountStore {
         val like = track.id !in _likedIds.value
         _likedIds.update { if (like) it + track.id else it - track.id }
         scope.launch {
-            runCatching { NeteaseApi.likeTrack(track.id, like) }.onFailure {
+            runCatching {
+                if (EngineLink.isUi) {
+                    EngineLink.UiSide.callAsync(SET_LIKE, Bundle().apply {
+                        putLong("id", track.id)
+                        putBoolean("like", like)
+                    })
+                } else {
+                    NeteaseApi.likeTrack(track.id, like)
+                }
+            }.onFailure {
                 _likedIds.update { ids -> if (like) ids - track.id else ids + track.id }
                 onError(it.message ?: "操作失败")
             }
+        }
+    }
+
+    private const val LOGIN_SUCCEEDED = "account.loginSucceeded"
+    private const val LOGOUT = "account.logout"
+    private const val SET_LIKE = "account.setLike"
+
+    /** 界面进程：登录态、资料、红心、歌单都由引擎持有，这里只收镜像。 */
+    fun mirrorFromEngine() {
+        EngineLink.UiSide.mirror("account.loggedIn", _loggedIn) { it.toBoolean() }
+        EngineLink.UiSide.mirror("account.profile", _profile, Codecs::profile)
+        EngineLink.UiSide.mirror("account.likedIds", _likedIds, Codecs::ids)
+        EngineLink.UiSide.mirror("account.playlists", _playlists, Codecs::playlists)
+    }
+
+    fun serveToUi() {
+        EngineLink.EngineSide.mirror("account.loggedIn", loggedIn) { it.toString() }
+        EngineLink.EngineSide.mirror("account.profile", profile, Codecs::profile)
+        EngineLink.EngineSide.mirror("account.likedIds", likedIds, Codecs::ids)
+        EngineLink.EngineSide.mirror("account.playlists", playlists, Codecs::playlists)
+        EngineLink.EngineSide.command(LOGIN_SUCCEEDED) { EngineLink.EngineSide.onMain(::onLoginSucceeded); null }
+        EngineLink.EngineSide.command(LOGOUT) { EngineLink.EngineSide.onMain(::logout); null }
+        EngineLink.EngineSide.command(SET_LIKE) { args ->
+            val id = args.getLong("id")
+            val like = args.getBoolean("like")
+            _likedIds.update { if (like) it + id else it - id }
+            runBlocking {
+                runCatching { NeteaseApi.likeTrack(id, like) }.onFailure {
+                    _likedIds.update { ids -> if (like) ids - id else ids + id }
+                    throw it
+                }
+            }
+            null
         }
     }
 }

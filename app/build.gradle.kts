@@ -14,8 +14,8 @@ android {
         applicationId = "com.cloudmusic.car"
         minSdk = 28
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.0.17"
+        versionCode = 19
+        versionName = "1.0.18"
     }
 
     // 正式签名：读取工程根目录的 keystore.properties（不入库）；缺失时回退到 debug 签名
@@ -57,6 +57,7 @@ android {
     // 三个功能包共用的播放页源码，编进各自的 DEX（打包脚本只收本模块的类）
     sourceSets {
         getByName("main").java.srcDir("../shared/nowplaying/src/main/java")
+        getByName("main").java.srcDir("../shared/enginelink/src/main/java")
         getByName("test").java.srcDir("../shared/nowplaying/src/test/java")
     }
 }
