@@ -1,6 +1,8 @@
 package com.qqmusic.car.api
 
+import android.os.Bundle
 import android.util.Base64
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -9,7 +11,14 @@ import java.util.concurrent.ConcurrentHashMap
 enum class QQLoginState { WAITING, SCANNED, DONE, EXPIRED, REFUSED }
 
 /** 扫码已确认、但换 QQ 音乐凭证失败：凭证只能换一次，不能拿同一个码再轮询重试，只能刷新二维码。 */
-class QQLoginExchangeException(cause: Throwable) : Exception(cause.message ?: "登录失败", cause)
+class QQLoginExchangeException(cause: Throwable) : Exception(cause.message ?: "登录失败", cause), EngineLink.CodedException {
+    /** 跨进程时靠这个码在界面那边还原成同一个异常（扫码页据此改为「刷新二维码」）。 */
+    override val errorCode: Int get() = CODE
+
+    companion object {
+        const val CODE = -7001
+    }
+}
 
 class QQLoginQr(val image: ByteArray, val identifier: String)
 
@@ -18,13 +27,67 @@ class QQLoginQr(val image: ByteArray, val identifier: String)
  * 授权页风控时好时坏，2026-09-26 按用户要求去掉；需要时见 git 历史（c749feb 及之前）。
  */
 object QQLoginApi {
-    suspend fun create(): QQLoginQr = withContext(Dispatchers.IO) { createMobile() }
+    suspend fun create(): QQLoginQr = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            val reply = QQMusicClient.engineCall(CMD_CREATE)
+            QQLoginQr(
+                requireNotNull(reply.getByteArray(KEY_IMAGE)) { "获取 QQ 音乐二维码失败" },
+                requireNotNull(reply.getString(KEY_ID)) { "获取 QQ 音乐二维码失败" },
+            )
+        } else {
+            createMobile()
+        }
+    }
 
-    suspend fun check(qr: QQLoginQr): QQLoginState = withContext(Dispatchers.IO) { checkMobile(qr.identifier) }
+    suspend fun check(qr: QQLoginQr): QQLoginState = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            val reply = try {
+                QQMusicClient.engineCall(CMD_CHECK, Bundle().apply { putString(KEY_ID, qr.identifier) })
+            } catch (e: ApiException) {
+                if (e.code == QQLoginExchangeException.CODE) throw QQLoginExchangeException(IllegalStateException(e.message))
+                throw e
+            }
+            QQLoginState.valueOf(reply.getString(KEY_STATE) ?: QQLoginState.WAITING.name)
+        } else {
+            checkMobile(qr.identifier)
+        }
+    }
 
     /** 扫码页离开或换码时调用：断开 MQTT 长连接。 */
     fun close(qr: QQLoginQr) {
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.fire(CMD_CLOSE, Bundle().apply { putString(KEY_ID, qr.identifier) })
+            return
+        }
         mobileSessions.remove(qr.identifier)?.close()
+    }
+
+    // ---------- 拆进程：扫码会话（MQTT 长连接）、换凭证、存凭证都只在引擎里 ----------
+
+    private const val CMD_CREATE = "login.create"
+    private const val CMD_CHECK = "login.check"
+    private const val CMD_CLOSE = "login.close"
+    private const val KEY_ID = "id"
+    private const val KEY_IMAGE = "image"
+    private const val KEY_STATE = "state"
+
+    fun serveToUi() {
+        val engine = EngineLink.EngineSide
+        engine.command(CMD_CREATE) {
+            val qr = createMobile()
+            Bundle().apply {
+                putByteArray(KEY_IMAGE, qr.image)
+                putString(KEY_ID, qr.identifier)
+            }
+        }
+        engine.command(CMD_CHECK) { args ->
+            val state = checkMobile(requireNotNull(args.getString(KEY_ID)))
+            Bundle().apply { putString(KEY_STATE, state.name) }
+        }
+        engine.command(CMD_CLOSE) { args ->
+            args.getString(KEY_ID)?.let { mobileSessions.remove(it)?.close() }
+            null
+        }
     }
 
     private val mobileSessions = ConcurrentHashMap<String, QQMobileLogin>()

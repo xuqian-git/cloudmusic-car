@@ -2,6 +2,10 @@ package com.qqmusic.car.api
 
 import android.util.Base64
 import android.util.Log
+import com.paopao.music.link.EngineLink
+import com.qqmusic.car.link.Codecs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -80,7 +84,15 @@ object QQMusicApi {
         )
     }
 
-    suspend fun playRecords(uid: Long): List<Track> = QQRecentStore.load()
+    /** 最近播放记在引擎进程的 SharedPreferences 里（播放器在那边），界面进程读不到最新的，要问引擎。 */
+    suspend fun playRecords(uid: Long): List<Track> {
+        if (EngineLink.isUi) {
+            return withContext(Dispatchers.IO) {
+                register(Codecs.tracks(EngineLink.readText(client.engineCall(CMD_RECENT)) ?: "[]"))
+            }
+        }
+        return QQRecentStore.load()
+    }
 
     class CloudDrive(val tracks: List<Track>, val usedBytes: Long, val maxBytes: Long)
     suspend fun cloudDrive(maxTracks: Int = 3000) = CloudDrive(dailySongs().take(maxTracks), 0, 0)
@@ -135,6 +147,13 @@ object QQMusicApi {
     class PlaylistDetail(val playlist: Playlist, val description: String?, val tracks: List<Track>)
 
     suspend fun playlistDetail(id: Long, maxTracks: Int = 3000): PlaylistDetail {
+        if (id == 0L && EngineLink.isUi) {
+            // 「我喜欢」要用凭证里的 encryptUin / musicId，凭证只在引擎里：整份交给引擎取。
+            return withContext(Dispatchers.IO) {
+                Codecs.playlistDetail(EngineLink.readText(client.engineCall(CMD_LIKED_DETAIL)) ?: error("QQ 音乐返回为空"))
+                    .also { register(it.tracks) }
+            }
+        }
         if (id == 0L) {
             val liked = likedTracks()
             return PlaylistDetail(
@@ -198,6 +217,18 @@ object QQMusicApi {
         val mid = URLEncoder.encode(track.mid, "UTF-8")
         val root = client.getJson("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=$mid&format=json&nobase64=1")
         return LyricsParser.merge(root.optString("lyric"), root.optString("trans"))
+    }
+
+    private const val CMD_RECENT = "api.playRecords"
+    private const val CMD_LIKED_DETAIL = "api.likedDetail"
+
+    /** 引擎侧：界面进程里读不到凭证 / 本地记录的那几个接口。 */
+    fun serveToUi() {
+        val engine = EngineLink.EngineSide
+        engine.command(CMD_RECENT) { EngineLink.text(Codecs.tracks(QQRecentStore.load())) }
+        engine.command(CMD_LIKED_DETAIL) {
+            EngineLink.text(Codecs.playlistDetail(kotlinx.coroutines.runBlocking { playlistDetail(0) }))
+        }
     }
 
     suspend fun scrobble(action: String, trackId: Long, sourceId: Long, seconds: Long = 0) = Unit

@@ -3,6 +3,10 @@ package com.qqmusic.car.plugin
 import android.content.Context
 import android.os.Bundle
 import android.view.View
+import com.paopao.music.link.EngineLink
+import java.io.File
+import java.util.function.BiFunction
+import java.util.function.Consumer
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.media3.session.MediaSession
@@ -23,17 +27,51 @@ import kotlinx.coroutines.launch
 
 /** Entry loaded by Paopao Desktop from a signed .ppmusic pack. */
 class QQMusicPlugin {
-    fun close() = Runtime.close()
+    private var subscription: Any? = null
 
+    fun close() {
+        if (EngineLink.isUi) {
+            EngineLink.UiSide.detach(subscription)
+            subscription = null
+            return
+        }
+        Runtime.close()
+    }
+
+    /** 老桌面（HOST_API 2）：播放器和界面都在桌面主进程里。 */
     fun createView(context: Context): View {
         Runtime.ensureStarted(context.applicationContext)
-        return ComposeView(context).apply {
+        return contentView(context)
+    }
+
+    /**
+     * HOST_API 3：引擎（[QQMusicEngine]）已在桌面的 :music 子进程里跑，这里只画界面。
+     * [call]、[subscribe] 是桌面给的传输口，见 [EngineLink.UiSide.attach]。
+     */
+    fun createView(context: Context, directory: File, call: BiFunction<*, *, *>, subscribe: Consumer<*>): View {
+        attachUi(context.applicationContext, call, subscribe)
+        return contentView(context)
+    }
+
+    @Synchronized
+    private fun attachUi(context: Context, call: Any, subscribe: Any) {
+        if (subscription === subscribe) return
+        PlayerHub.mirrorFromEngine()
+        AccountStore.mirrorFromEngine()
+        Settings.mirrorFromEngine()
+        MusicCache.mirrorFromEngine()
+        EngineLink.UiSide.attach(context, call, subscribe)
+        subscription = subscribe
+        MusicCache.init(context)
+    }
+
+    private fun contentView(context: Context): View =
+        ComposeView(context).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
                 QQMusicTheme { AppRoot(embedded = true) }
             }
         }
-    }
 
     fun canGoBack(): Boolean = false
 
@@ -43,7 +81,7 @@ class QQMusicPlugin {
         (view as? ComposeView)?.disposeComposition()
     }
 
-    private object Runtime {
+    internal object Runtime {
         private const val METADATA_KEY_LYRIC = "android.media.metadata.LYRIC"
         private const val STATUS_TEXT = "com.paopao.music.STATUS_TEXT"
         private const val STATUS_KIND = "com.paopao.music.STATUS_KIND"

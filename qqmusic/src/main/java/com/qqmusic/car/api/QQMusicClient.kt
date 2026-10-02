@@ -2,7 +2,9 @@ package com.qqmusic.car.api
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Bundle
 import android.util.Log
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
@@ -18,7 +20,9 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-class ApiException(val code: Int, message: String) : IOException(message)
+class ApiException(val code: Int, message: String) : IOException(message), EngineLink.CodedException {
+    override val errorCode: Int get() = code
+}
 
 data class QQCredential(
     val musicId: Long,
@@ -245,14 +249,81 @@ object QQMusicClient {
     }
 
     suspend fun cgi(module: String, method: String, param: JSONObject = JSONObject(), comm: JSONObject? = null): JSONObject =
-        withContext(Dispatchers.IO) { cgiBlocking(module, method, param, comm) }
+        withContext(Dispatchers.IO) {
+            if (EngineLink.isUi) {
+                remote(KIND_CGI, module, method, param) { comm?.let { putString(NET_EXTRA, it.toString()) } }
+            } else {
+                cgiBlocking(module, method, param, comm)
+            }
+        }
 
     suspend fun cgiAndroid(
         module: String,
         method: String,
         param: JSONObject = JSONObject(),
         overrides: Map<String, Any?> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) { cgiAndroidBlocking(module, method, param, overrides) }
+    ): JSONObject = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            remote(KIND_ANDROID, module, method, param) {
+                putString(NET_EXTRA, JSONObject().apply { overrides.forEach { (k, v) -> if (v != null) put(k, v) } }.toString())
+            }
+        } else {
+            cgiAndroidBlocking(module, method, param, overrides)
+        }
+    }
+
+    // ---------- 拆进程：界面 → 引擎的请求转发 ----------
+
+    /**
+     * 界面进程不持有凭证、Cookie、安卓身份：请求整份交给 :music 里的引擎发，comm 拼装、续签重试、退登都只在那边发生。
+     * 引擎报的业务码原样还原成 [ApiException]，界面里的错误提示、搜索重试判断不变。
+     */
+    private inline fun remote(kind: String, module: String, method: String, param: JSONObject, extra: Bundle.() -> Unit = {}): JSONObject {
+        val args = Bundle().apply {
+            putString(NET_KIND, kind)
+            putString(NET_MODULE, module)
+            putString(NET_METHOD, method)
+            extra()
+            EngineLink.putText(this, param.toString())
+        }
+        val text = EngineLink.readText(engineCall(NET_COMMAND, args)).orEmpty()
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    }
+
+    /** 界面进程调引擎：引擎的业务错误还原成 [ApiException]，引擎没起来/崩了当网络错误。 */
+    internal fun engineCall(method: String, args: Bundle = Bundle()): Bundle = try {
+        EngineLink.UiSide.call(method, args)
+    } catch (e: EngineLink.EngineCallException) {
+        throw ApiException(e.code, e.message.orEmpty())
+    } catch (e: EngineLink.EngineUnavailable) {
+        throw IOException(e.message, e)
+    }
+
+    /** 引擎侧：接住界面转来的请求（跑在 Binder 线程，本来就是阻塞调用）。 */
+    fun serveRemote(args: Bundle): Bundle {
+        val param = JSONObject(EngineLink.readText(args) ?: "{}")
+        val module = args.getString(NET_MODULE).orEmpty()
+        val method = args.getString(NET_METHOD).orEmpty()
+        val extra = args.getString(NET_EXTRA)
+        val result = when (args.getString(NET_KIND)) {
+            KIND_ANDROID -> {
+                val o = JSONObject(extra ?: "{}")
+                cgiAndroidBlocking(module, method, param, o.keys().asSequence().associateWith { o.get(it) })
+            }
+            KIND_GET -> getJsonBlocking(module)
+            else -> cgiBlocking(module, method, param, extra?.let(::JSONObject))
+        }
+        return EngineLink.text(result.toString())
+    }
+
+    const val NET_COMMAND = "net.request"
+    private const val NET_KIND = "kind"
+    private const val NET_MODULE = "module"
+    private const val NET_METHOD = "method"
+    private const val NET_EXTRA = "extra"
+    private const val KIND_CGI = "cgi"
+    private const val KIND_ANDROID = "android"
+    private const val KIND_GET = "get"
 
     fun cgiAndroidBlocking(
         module: String,
@@ -308,10 +379,14 @@ object QQMusicClient {
     }
 
     suspend fun getJson(url: String): JSONObject = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) remote(KIND_GET, url, "", JSONObject()) else getJsonBlocking(url)
+    }
+
+    private fun getJsonBlocking(url: String): JSONObject {
         val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).header("Referer", "https://y.qq.com/").build()
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw ApiException(response.code, "网络错误 (${response.code})")
-            JSONObject(response.body?.string().orEmpty())
+            return JSONObject(response.body?.string().orEmpty())
         }
     }
 
