@@ -5,5 +5,5 @@
   "versionName": "1.0.19",
   "entryClass": "com.cloudmusic.car.plugin.CloudMusicPlugin",
   "engineClass": "com.cloudmusic.car.plugin.CloudMusicEngine",
-  "minHostApi": 3
+  "minHostApi": 4
 }

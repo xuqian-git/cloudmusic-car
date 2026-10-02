@@ -5,5 +5,5 @@
   "versionName": "1.0.18",
   "entryClass": "com.kugoumusic.car.plugin.KuGouMusicPlugin",
   "engineClass": "com.kugoumusic.car.plugin.KuGouMusicEngine",
-  "minHostApi": 3
+  "minHostApi": 4
 }
