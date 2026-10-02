@@ -1,9 +1,13 @@
 package com.kugoumusic.car.api
 
 import com.paopao.music.nowplaying.WordLyricsParser
+import android.os.Bundle
 import android.util.Base64
 import android.util.Log
+import com.kugoumusic.car.link.Codecs
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -12,6 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.InflaterInputStream
@@ -108,11 +113,16 @@ object KuGouMusicApi {
         }
     }
 
-    suspend fun playRecords(uid: Long): List<Track> = KuGouRecentStore.load()
+    /** 最近播放记在引擎进程的 SharedPreferences 里；界面进程读自己的那份会是旧缓存，所以也要去引擎拿。 */
+    suspend fun playRecords(uid: Long): List<Track> {
+        if (EngineLink.isUi) return viaEngine("playRecords", JSONObject().put("uid", uid), Codecs::tracks)
+        return KuGouRecentStore.load()
+    }
 
     class CloudDrive(val tracks: List<Track>, val usedBytes: Long, val maxBytes: Long)
 
     suspend fun cloudDrive(maxTracks: Int = 3000): CloudDrive {
+        if (EngineLink.isUi) return viaEngine("cloudDrive", JSONObject().put("maxTracks", maxTracks), Codecs::cloudDrive)
         val all = mutableListOf<Track>()
         var page = 1
         var used = 0L
@@ -131,9 +141,13 @@ object KuGouMusicApi {
         return CloudDrive(all.distinctBy(Track::id), used, max)
     }
 
-    suspend fun recommendResource(): List<Playlist> = personalizedPlaylists(18)
+    suspend fun recommendResource(): List<Playlist> {
+        if (EngineLink.isUi) return viaEngine("recommendResource", decode = Codecs::playlists)
+        return personalizedPlaylists(18)
+    }
 
     suspend fun personalizedPlaylists(limit: Int = 30): List<Playlist> {
+        if (EngineLink.isUi) return viaEngine("personalizedPlaylists", JSONObject().put("limit", limit), Codecs::playlists)
         val now = System.currentTimeMillis() / 1000
         val special = JSONObject().put("withtag", 1).put("withsong", 1).put("sort", 1).put("ugc", 1)
             .put("is_selected", 0).put("withrecommend", 1).put("area_code", 1).put("categoryid", 0)
@@ -148,6 +162,7 @@ object KuGouMusicApi {
     }
 
     suspend fun dailySongs(): List<Track> {
+        if (EngineLink.isUi) return viaEngine("dailySongs", decode = Codecs::tracks)
         val body = JSONObject().put("platform", "android").put("userid", KuGouMusicClient.credential?.userId ?: 0).toString()
         val root = KuGouMusicClient.request("/everyday_song_recommend", "POST", body = body, headers = mapOf("x-router" to "everydayrec.service.kugou.com"))
         val data = root.optJSONObject("data") ?: root
@@ -200,6 +215,7 @@ object KuGouMusicApi {
     }
 
     suspend fun toplists(): List<Playlist> {
+        if (EngineLink.isUi) return viaEngine("toplists", decode = Codecs::playlists)
         val root = KuGouMusicClient.request("/ocean/v6/rank/list", params = mapOf("plat" to 2, "withsong" to 1, "parentid" to 0))
         val data = root.optJSONObject("data") ?: root
         return data.arrayAny("info", "list").objects().map { item ->
@@ -214,6 +230,9 @@ object KuGouMusicApi {
     class PlaylistDetail(val playlist: Playlist, val description: String?, val tracks: List<Track>)
 
     suspend fun playlistDetail(id: Long, maxTracks: Int = 3000): PlaylistDetail {
+        if (EngineLink.isUi) {
+            return viaEngine("playlistDetail", JSONObject().put("id", id).put("maxTracks", maxTracks), Codecs::playlistDetail)
+        }
         val remote = playlists[id] ?: RemotePlaylist(id.toString(), Kind.USER)
         return if (remote.kind == Kind.RANK) rankDetail(id, remote, maxTracks) else {
             if (remote.kind == Kind.USER) {
@@ -373,6 +392,7 @@ object KuGouMusicApi {
     }
 
     suspend fun searchSongs(keywords: String, limit: Int = 50): List<Track> {
+        if (EngineLink.isUi) return viaEngine("searchSongs", JSONObject().put("keywords", keywords).put("limit", limit), Codecs::tracks)
         val root = KuGouMusicClient.request(
             "/v2/search/song", params = mapOf("keyword" to keywords, "page" to 1, "pagesize" to limit,
                 "platform" to "AndroidFilter", "iscorrection" to 1, "privilegefilter" to 0, "area_code" to 1, "dopicfull" to 1),
@@ -383,6 +403,9 @@ object KuGouMusicApi {
     }
 
     suspend fun searchPlaylists(keywords: String, limit: Int = 40): List<Playlist> {
+        if (EngineLink.isUi) {
+            return viaEngine("searchPlaylists", JSONObject().put("keywords", keywords).put("limit", limit), Codecs::playlists)
+        }
         val root = KuGouMusicClient.request(
             "/v1/search/special", params = mapOf("keyword" to keywords, "page" to 1, "pagesize" to limit,
                 "platform" to "AndroidFilter", "iscorrection" to 1), headers = mapOf("x-router" to "complexsearch.kugou.com"),
@@ -435,6 +458,57 @@ object KuGouMusicApi {
     }
 
     private const val USER_PLAYLIST_SCAN_LIMIT = 30_000
+
+    /** 引擎侧：界面转来的整首歌单可能是别处拿的，取地址、红心都按 id 查这里，先登记上。 */
+    internal fun registerAll(items: List<Track>) {
+        register(items)
+    }
+
+    // ---------- 拆进程：界面 → 引擎 ----------
+    //
+    // 酷狗的请求体里直接带 token / userid / mid，取地址、红心还要查本对象里的歌曲、歌单登记表，
+    // 所以不在 KuGouMusicClient.request 那层转发，而是界面用到的这几个接口整个交给 :music 里的引擎跑：
+    // 凭证、续签、登记表都只在引擎里。引擎报的业务码原样还原成 [ApiException]。
+
+    const val NET_COMMAND = "api.call"
+    private const val NET_METHOD = "method"
+
+    private suspend fun <T> viaEngine(method: String, args: JSONObject = JSONObject(), decode: (String) -> T): T =
+        withContext(Dispatchers.IO) {
+            val bundle = Bundle().apply {
+                putString(NET_METHOD, method)
+                EngineLink.putText(this, args.toString())
+            }
+            val reply = try {
+                EngineLink.UiSide.call(NET_COMMAND, bundle)
+            } catch (e: EngineLink.EngineCallException) {
+                throw ApiException(e.code, e.message.orEmpty())
+            } catch (e: EngineLink.EngineUnavailable) {
+                throw IOException(e.message, e)
+            }
+            decode(EngineLink.readText(reply).orEmpty())
+        }
+
+    /** 引擎侧：接住界面转来的接口调用（Binder 线程，阻塞等结果）。 */
+    fun serveRemote(args: Bundle): Bundle {
+        val method = args.getString(NET_METHOD)
+        val a = JSONObject(EngineLink.readText(args) ?: "{}")
+        val text = runBlocking {
+            when (method) {
+                "toplists" -> Codecs.playlists(toplists())
+                "recommendResource" -> Codecs.playlists(recommendResource())
+                "personalizedPlaylists" -> Codecs.playlists(personalizedPlaylists(a.getInt("limit")))
+                "dailySongs" -> Codecs.tracks(dailySongs())
+                "playlistDetail" -> Codecs.playlistDetail(playlistDetail(a.getLong("id"), a.getInt("maxTracks")))
+                "playRecords" -> Codecs.tracks(playRecords(a.getLong("uid")))
+                "cloudDrive" -> Codecs.cloudDrive(cloudDrive(a.getInt("maxTracks")))
+                "searchSongs" -> Codecs.tracks(searchSongs(a.getString("keywords"), a.getInt("limit")))
+                "searchPlaylists" -> Codecs.playlists(searchPlaylists(a.getString("keywords"), a.getInt("limit")))
+                else -> throw ApiException(-1, "未知接口：$method")
+            }
+        }
+        return EngineLink.text(text)
+    }
 
     private fun register(items: List<Track>): List<Track> = items.also { list -> list.forEach { tracks[it.id] = it } }
 

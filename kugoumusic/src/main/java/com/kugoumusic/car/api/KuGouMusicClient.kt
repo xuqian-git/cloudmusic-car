@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
 import android.util.Log
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -24,7 +25,9 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class ApiException(val code: Int, message: String) : IOException(message)
+class ApiException(val code: Int, message: String) : IOException(message), EngineLink.CodedException {
+    override val errorCode: Int get() = code
+}
 
 data class KuGouCredential(
     val userId: Long,

@@ -1,15 +1,18 @@
 package com.kugoumusic.car.api
 
 import android.graphics.Bitmap
+import android.os.Bundle
 import android.util.Base64
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import com.paopao.music.link.EngineLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
@@ -40,6 +43,14 @@ object KuGouLoginApi {
     )
 
     suspend fun create(type: KuGouLoginType): KuGouLoginQr = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            val reply = remote(CMD_CREATE, Bundle().apply { putString(KEY_TYPE, type.name) })
+            return@withContext KuGouLoginQr(
+                KuGouLoginType.valueOf(reply.getString(KEY_TYPE) ?: type.name),
+                reply.getByteArray(KEY_IMAGE) ?: byteArrayOf(),
+                reply.getString(KEY_ID).orEmpty(),
+            )
+        }
         when (type) {
             KuGouLoginType.MOBILE -> createMobile()
             KuGouLoginType.QQ -> createQq()
@@ -48,12 +59,51 @@ object KuGouLoginApi {
     }
 
     suspend fun check(qr: KuGouLoginQr): KuGouLoginState = withContext(Dispatchers.IO) {
+        if (EngineLink.isUi) {
+            val reply = remote(CMD_CHECK, Bundle().apply { putString(KEY_ID, qr.identifier) })
+            return@withContext KuGouLoginState.valueOf(reply.getString(KEY_STATE) ?: KuGouLoginState.WAITING.name)
+        }
         val session = sessions[qr.identifier] ?: return@withContext KuGouLoginState.EXPIRED
         when (session.type) {
             KuGouLoginType.MOBILE -> checkMobile(session)
             KuGouLoginType.QQ -> checkQq(session)
             KuGouLoginType.WECHAT -> checkWechat(session)
         }.also { if (it == KuGouLoginState.DONE || it == KuGouLoginState.EXPIRED) sessions.remove(qr.identifier) }
+    }
+
+    // ---------- 拆进程：扫码会话、凭证落盘都只在引擎（:music）里 ----------
+
+    private const val CMD_CREATE = "login.create"
+    private const val CMD_CHECK = "login.check"
+    private const val KEY_TYPE = "type"
+    private const val KEY_IMAGE = "image"
+    private const val KEY_ID = "id"
+    private const val KEY_STATE = "state"
+
+    private fun remote(method: String, args: Bundle): Bundle = try {
+        EngineLink.UiSide.call(method, args)
+    } catch (e: EngineLink.EngineCallException) {
+        throw ApiException(e.code, e.message.orEmpty())
+    } catch (e: EngineLink.EngineUnavailable) {
+        throw IOException(e.message, e)
+    }
+
+    fun serveToUi() {
+        EngineLink.EngineSide.command(CMD_CREATE) { args ->
+            val type = KuGouLoginType.valueOf(requireNotNull(args.getString(KEY_TYPE)))
+            val qr = kotlinx.coroutines.runBlocking { create(type) }
+            Bundle().apply {
+                putString(KEY_TYPE, qr.type.name)
+                putByteArray(KEY_IMAGE, qr.image)
+                putString(KEY_ID, qr.identifier)
+            }
+        }
+        EngineLink.EngineSide.command(CMD_CHECK) { args ->
+            // 只认编号：会话（含 QQ 的 cookie）在引擎里，界面那份 KuGouLoginQr 只是个句柄。
+            val qr = KuGouLoginQr(KuGouLoginType.MOBILE, byteArrayOf(), args.getString(KEY_ID).orEmpty())
+            val state = kotlinx.coroutines.runBlocking { check(qr) }
+            Bundle().apply { putString(KEY_STATE, state.name) }
+        }
     }
 
     private fun createMobile(): KuGouLoginQr {
