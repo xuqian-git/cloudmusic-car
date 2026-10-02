@@ -75,10 +75,10 @@ object AccountStore {
                 refresh()
             }
         }
-        // 进程常驻多日：每小时看一眼是否满 12 小时（休眠时 delay 不走，所以取地址前还会再查一次）
+        // 进程常驻多日：每 10 分钟看一眼是否满 12 小时（休眠时 delay 不走，所以取地址前还会再查一次）
         scope.launch {
             while (true) {
-                delay(60 * 60 * 1000L)
+                delay(10 * 60 * 1000L)
                 NeteaseClient.refreshIfDue()
             }
         }
