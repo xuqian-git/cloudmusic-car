@@ -86,12 +86,12 @@ object QQLoginApi {
     }
 
     internal fun saveCredential(root: JSONObject, fallbackType: Int) {
-        val data = root.optJSONObject("data") ?: root
-        val id = data.optLong("musicid").takeIf { it > 0 } ?: data.optString("str_musicid").toLongOrNull() ?: 0
-        val key = data.optString("musickey")
-        check(id > 0 && key.isNotBlank()) { data.optString("msg").ifBlank { "登录凭证无效" } }
-        QQMusicClient.storeCredential(
-            QQCredential(id, key, data.optString("encryptUin"), data.optInt("loginType", fallbackType), data.optString("nick"), data.optString("avatar")),
+        val credential = QQMusicClient.credentialFrom(root, fallbackType)
+        android.util.Log.i(
+            "QQAuth",
+            "login saved type=${credential.loginType} refreshKey=${credential.refreshKey.isNotBlank()} " +
+                "refreshToken=${credential.refreshToken.isNotBlank()} expiresIn=${credential.keyExpiresIn}",
         )
+        QQMusicClient.storeCredential(credential)
     }
 }

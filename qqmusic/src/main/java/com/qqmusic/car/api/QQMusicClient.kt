@@ -2,6 +2,7 @@ package com.qqmusic.car.api
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
@@ -26,9 +27,29 @@ data class QQCredential(
     val loginType: Int,
     val nickname: String = "",
     val avatarUrl: String = "",
+    // 续签材料（同 QQMusicApi Credential）；1.0.19 之前登录的没有存，只能等失效后重新扫码
+    val refreshKey: String = "",
+    val refreshToken: String = "",
+    val accessToken: String = "",
+    val openId: String = "",
+    val unionId: String = "",
+    val expiredAt: Long = 0,
+    val keyExpiresIn: Long = 0,
+    val musicKeyCreateTime: Long = 0,
 )
 
 object QQMusicClient {
+    private const val TAG = "QQAuth"
+    private const val LOGIN_MODULE = "music.login.LoginServer"
+    private val AUTH_EXPIRED_CODES = setOf(1000, 104400, 104401)
+    /** 续签间隔；musickey 用到有效期 2/3 也提前续。检查本身只比时间戳，10 分钟查一次。 */
+    private const val REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000L
+    private const val REFRESH_DEDUP_MS = 60 * 1000L
+    private val refreshLock = Any()
+
+    /** 服务器明确判定登录失效、续签也救不回来时回调；本地凭证已清掉。 */
+    @Volatile var onSessionExpired: (() -> Unit)? = null
+
     private const val CGI_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
@@ -67,6 +88,14 @@ object QQMusicClient {
                 loginType = prefs.getInt("loginType", 0),
                 nickname = prefs.getString("nickname", "").orEmpty(),
                 avatarUrl = prefs.getString("avatarUrl", "").orEmpty(),
+                refreshKey = prefs.getString("refreshKey", "").orEmpty(),
+                refreshToken = prefs.getString("refreshToken", "").orEmpty(),
+                accessToken = prefs.getString("accessToken", "").orEmpty(),
+                openId = prefs.getString("openId", "").orEmpty(),
+                unionId = prefs.getString("unionId", "").orEmpty(),
+                expiredAt = prefs.getLong("expiredAt", 0),
+                keyExpiresIn = prefs.getLong("keyExpiresIn", 0),
+                musicKeyCreateTime = prefs.getLong("musicKeyCreateTime", 0),
             )
         }
     }
@@ -80,7 +109,123 @@ object QQMusicClient {
             .putInt("loginType", value.loginType)
             .putString("nickname", value.nickname)
             .putString("avatarUrl", value.avatarUrl)
+            .putString("refreshKey", value.refreshKey)
+            .putString("refreshToken", value.refreshToken)
+            .putString("accessToken", value.accessToken)
+            .putString("openId", value.openId)
+            .putString("unionId", value.unionId)
+            .putLong("expiredAt", value.expiredAt)
+            .putLong("keyExpiresIn", value.keyExpiresIn)
+            .putLong("musicKeyCreateTime", value.musicKeyCreateTime)
             .apply()
+    }
+
+    /** 登录 / 续签返回的 data 转凭证；返回里没有的昵称头像、续签材料沿用 [previous]。 */
+    internal fun credentialFrom(root: JSONObject, fallbackType: Int, previous: QQCredential? = null): QQCredential {
+        val data = root.optJSONObject("data") ?: root
+        val id = data.optLong("musicid").takeIf { it > 0 } ?: data.optString("str_musicid").toLongOrNull() ?: 0
+        val key = data.optString("musickey")
+        check(id > 0 && key.isNotBlank()) { data.optString("msg").ifBlank { "登录凭证无效" } }
+        fun text(name: String, old: String?) = data.optString(name).ifBlank { old.orEmpty() }
+        fun number(name: String, old: Long?) = data.optLong(name).takeIf { it > 0 } ?: old ?: 0
+        return QQCredential(
+            musicId = id,
+            musicKey = key,
+            encryptUin = text("encryptUin", previous?.encryptUin),
+            loginType = data.optInt("loginType").takeIf { it > 0 } ?: previous?.loginType ?: fallbackType,
+            nickname = text("nick", previous?.nickname),
+            avatarUrl = text("avatar", previous?.avatarUrl),
+            refreshKey = text("refresh_key", previous?.refreshKey),
+            refreshToken = text("refresh_token", previous?.refreshToken),
+            accessToken = text("access_token", previous?.accessToken),
+            openId = text("openid", previous?.openId),
+            unionId = text("unionid", previous?.unionId),
+            expiredAt = number("expired_at", previous?.expiredAt),
+            keyExpiresIn = number("keyExpiresIn", previous?.keyExpiresIn),
+            musicKeyCreateTime = number("musickeyCreateTime", previous?.musicKeyCreateTime),
+        )
+    }
+
+    /** 扫码成功：凭证刚下发，算作刚续签过。 */
+    fun markLoginFresh() {
+        prefs.edit().putLong("lastRefreshAt", System.currentTimeMillis()).apply()
+    }
+
+    enum class RefreshResult { OK, EXPIRED, FAILED }
+
+    private fun refreshDue(auth: QQCredential): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong("lastRefreshAt", 0L) >= REFRESH_INTERVAL_MS) return true
+        if (auth.musicKeyCreateTime <= 0 || auth.keyExpiresIn <= 0) return false
+        // 服务器给的是秒
+        return now / 1000 >= auth.musicKeyCreateTime + auth.keyExpiresIn * 2 / 3
+    }
+
+    /** 到期才续；没到期只比时间戳。老登录没有续签材料时什么都不做（key 可能还有效）。任意后台线程可调。 */
+    fun refreshIfDueBlocking() {
+        val auth = credential ?: return
+        if (auth.refreshKey.isBlank() || !refreshDue(auth)) return
+        refreshSessionBlocking(authFailed = false)
+    }
+
+    suspend fun refreshIfDue() = withContext(Dispatchers.IO) { refreshIfDueBlocking() }
+
+    /**
+     * 续签（同 QQMusicApi refresh_credential：LoginServer.Login + refresh_key/refresh_token，loginMode 2）。
+     * [authFailed] 表示接口刚报登录失效：这时没有续签材料或续签被拒，就清掉本地登录并回调 [onSessionExpired]。
+     */
+    fun refreshSessionBlocking(authFailed: Boolean): RefreshResult = synchronized(refreshLock) {
+        val auth = credential ?: return RefreshResult.EXPIRED
+        if (System.currentTimeMillis() - prefs.getLong("lastRefreshAt", 0L) < REFRESH_DEDUP_MS) return RefreshResult.OK
+        var code = 0
+        val result = if (auth.refreshKey.isBlank()) {
+            RefreshResult.EXPIRED
+        } else {
+            val param = JSONObject()
+                .put("openid", auth.openId)
+                .put("access_token", auth.accessToken)
+                .put("refresh_token", auth.refreshToken)
+                .put("expired_in", auth.expiredAt)
+                .put("str_musicid", auth.musicId.toString())
+                .put("musicid", auth.musicId)
+                .put("musickey", auth.musicKey)
+                .put("unionid", auth.unionId)
+                .put("refresh_key", auth.refreshKey)
+                .put("loginMode", 2)
+            try {
+                val data = rawCgi(
+                    LOGIN_MODULE, "Login", param,
+                    androidIdentity.commonParams(auth, mapOf("tmeLoginType" to auth.loginType)),
+                    QQAndroidIdentity.USER_AGENT,
+                )
+                storeCredential(credentialFrom(data, auth.loginType, auth))
+                RefreshResult.OK
+            } catch (e: ApiException) {
+                code = e.code
+                if (e.code in AUTH_EXPIRED_CODES) RefreshResult.EXPIRED else RefreshResult.FAILED
+            } catch (e: Exception) {
+                Log.w(TAG, "refresh failed: ${e.message}")
+                RefreshResult.FAILED
+            }
+        }
+        Log.i(TAG, "refresh result=$result code=$code material=${auth.refreshKey.isNotBlank()} authFailed=$authFailed")
+        when {
+            result == RefreshResult.OK -> markLoginFresh()
+            result == RefreshResult.EXPIRED && authFailed -> {
+                clearAuthCookies()
+                onSessionExpired?.invoke()
+            }
+        }
+        result
+    }
+
+    /** 已登录却报登录失效：先续签再重试一次；续签救不回来则由 [refreshSessionBlocking] 退登。 */
+    private inline fun withAuthRetry(module: String, request: () -> JSONObject): JSONObject = try {
+        request()
+    } catch (e: ApiException) {
+        if (e.code !in AUTH_EXPIRED_CODES || !isLoggedIn || module == LOGIN_MODULE) throw e
+        Log.i(TAG, "auth error ${e.code} on $module, refreshing")
+        if (refreshSessionBlocking(authFailed = true) == RefreshResult.OK) request() else throw e
     }
 
     fun updateProfile(nickname: String, avatarUrl: String) {
@@ -93,6 +238,8 @@ object QQMusicClient {
         prefs.edit()
             .remove("musicId").remove("musicKey").remove("encryptUin").remove("loginType")
             .remove("nickname").remove("avatarUrl")
+            .remove("refreshKey").remove("refreshToken").remove("accessToken").remove("openId").remove("unionId")
+            .remove("expiredAt").remove("keyExpiresIn").remove("musicKeyCreateTime").remove("lastRefreshAt")
             .apply()
         cookieStore.clear()
     }
@@ -105,30 +252,39 @@ object QQMusicClient {
         method: String,
         param: JSONObject = JSONObject(),
         overrides: Map<String, Any?> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) {
-        cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides), QQAndroidIdentity.USER_AGENT)
-    }
+    ): JSONObject = withContext(Dispatchers.IO) { cgiAndroidBlocking(module, method, param, overrides) }
 
     fun cgiAndroidBlocking(
         module: String,
         method: String,
         param: JSONObject = JSONObject(),
         overrides: Map<String, Any?> = emptyMap(),
-    ): JSONObject = cgiBlocking(module, method, param, androidIdentity.commonParams(credential, overrides), QQAndroidIdentity.USER_AGENT)
+    ): JSONObject = withAuthRetry(module) {
+        // comm 每次现取凭证，续签后重试用的是新 key
+        rawCgi(module, method, param, androidIdentity.commonParams(credential, overrides), QQAndroidIdentity.USER_AGENT)
+    }
 
-    /**
-     * [androidUserAgent] 非空表示 comm 是安卓 App 身份（ct=11）：请求头也必须是 QQ 音乐安卓 App 的，
-     * 身份前后矛盾会被风控时拦时放（登录换凭证尤其明显），与 QQMusicApi 一致。
-     */
     fun cgiBlocking(
         module: String,
         method: String,
         param: JSONObject = JSONObject(),
         comm: JSONObject? = null,
         androidUserAgent: String? = null,
+    ): JSONObject = withAuthRetry(module) { rawCgi(module, method, param, comm ?: commonParams(), androidUserAgent) }
+
+    /**
+     * [androidUserAgent] 非空表示 comm 是安卓 App 身份（ct=11）：请求头也必须是 QQ 音乐安卓 App 的，
+     * 身份前后矛盾会被风控时拦时放（登录换凭证尤其明显），与 QQMusicApi 一致。
+     */
+    private fun rawCgi(
+        module: String,
+        method: String,
+        param: JSONObject,
+        comm: JSONObject,
+        androidUserAgent: String?,
     ): JSONObject {
         val payload = JSONObject()
-            .put("comm", comm ?: commonParams())
+            .put("comm", comm)
             .put("req_0", JSONObject().put("module", module).put("method", method).put("param", param))
         val request = Request.Builder()
             .url(CGI_URL)

@@ -242,6 +242,8 @@ object PlayerHub {
             AudioQuality.STANDARD -> listOf(AudioQuality.STANDARD)
         }
         var quality = candidates.first()
+        // 过期 token 取地址不一定报错，可能只是降试听，所以取地址前补一次到期续签
+        KuGouMusicClient.refreshIfDueBlocking()
         var result = KuGouMusicApi.songUrlBlocking(id, quality.level)
         for (fallback in candidates.drop(1)) {
             if (result.url != null) break

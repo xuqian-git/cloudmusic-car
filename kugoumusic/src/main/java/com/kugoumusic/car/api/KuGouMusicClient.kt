@@ -3,6 +3,7 @@ package com.kugoumusic.car.api
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -48,6 +49,18 @@ object KuGouMusicClient {
             "X1+UR4tvOGOqp94TJtQ1EPnWGWXngpeIW5GxoQGao1rmYWAu6oi1z9XkChrsUd" +
             "C6DJE5E221wf/4WLFxwAtRQIDAQAB"
     internal const val USER_AGENT = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi"
+
+    private const val TAG = "KuGouAuth"
+    /** 续签间隔；检查本身只比时间戳，10 分钟查一次。 */
+    private const val REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000L
+    private const val REFRESH_DEDUP_MS = 60 * 1000L
+    // KuGouMusicApi login_token 的 p3 固定密钥
+    private const val TOKEN_P3_KEY = "90b8382a1bb4ccdcf063102053fd75b8"
+    private const val TOKEN_P3_IV = "f063102053fd75b8"
+    private val refreshLock = Any()
+
+    /** 服务器拒绝续签（token 已作废）时回调；本地凭证已清掉。 */
+    @Volatile var onSessionExpired: (() -> Unit)? = null
 
     private lateinit var prefs: SharedPreferences
     private val random = SecureRandom()
@@ -105,8 +118,81 @@ object KuGouMusicClient {
     fun clearAuthCookies() {
         credential = null
         prefs.edit().remove("userId").remove("token").remove("vipType").remove("vipToken")
-            .remove("nickname").remove("avatarUrl").apply()
+            .remove("nickname").remove("avatarUrl").remove("lastRefreshAt").apply()
     }
+
+    /** 扫码成功：token 刚下发，算作刚续签过。 */
+    fun markLoginFresh() {
+        prefs.edit().putLong("lastRefreshAt", System.currentTimeMillis()).apply()
+    }
+
+    enum class RefreshResult { OK, EXPIRED, FAILED }
+
+    /** 满 [REFRESH_INTERVAL_MS] 才续；没到期只比时间戳。任意后台线程可调。 */
+    fun refreshIfDueBlocking() {
+        if (!isLoggedIn) return
+        if (System.currentTimeMillis() - prefs.getLong("lastRefreshAt", 0L) < REFRESH_INTERVAL_MS) return
+        refreshSessionBlocking()
+    }
+
+    suspend fun refreshIfDue() = withContext(Dispatchers.IO) { refreshIfDueBlocking() }
+
+    /**
+     * 用旧 token 换新 token（同 KuGouMusicApi login_token：/v5/login_by_token）。
+     * 服务器明确拒绝（status 0）说明 token 已作废：清掉本地登录并回调 [onSessionExpired]。
+     */
+    fun refreshSessionBlocking(): RefreshResult = synchronized(refreshLock) {
+        val auth = credential ?: return RefreshResult.EXPIRED
+        if (System.currentTimeMillis() - prefs.getLong("lastRefreshAt", 0L) < REFRESH_DEDUP_MS) return RefreshResult.OK
+        var code = 0
+        val result = try {
+            val now = System.currentTimeMillis()
+            val p3 = aesHex(JSONObject().put("clienttime", now / 1000).put("token", auth.token).toString(), TOKEN_P3_KEY, TOKEN_P3_IV)
+            val params = encryptToken("{}")
+            val pk = rsaRawEncrypt(JSONObject().put("clienttime_ms", now).put("key", params.key).toString())
+            val body = JSONObject().put("dfid", dfid).put("p3", p3).put("plat", 1).put("t1", 0).put("t2", 0)
+                .put("t3", "MCwwLDAsMCwwLDAsMCwwLDA=").put("pk", pk).put("params", params.hex)
+                .put("userid", auth.userId).put("clienttime_ms", now).toString()
+            val root = requestBlocking("/v5/login_by_token", "POST", body = body, headers = mapOf("x-router" to "login.user.kugou.com"))
+            val data = root.optJSONObject("data") ?: throw ApiException(-1, "续签没有返回数据")
+            val secure = data.optString("secu_params").takeIf(String::isNotBlank)?.let { decryptToken(it, params.key) }
+            if (secure != null) {
+                val parsed = runCatching { JSONObject(secure) }.getOrNull()
+                if (parsed != null) parsed.keys().forEach { key -> data.put(key, parsed.opt(key)) } else data.put("token", secure)
+            }
+            val token = data.stringAny("token")
+            if (token.isBlank()) throw ApiException(-1, "续签没有返回 token")
+            storeCredential(auth.copy(
+                token = token,
+                vipType = if (data.has("vip_type")) data.optInt("vip_type") else auth.vipType,
+                vipToken = data.stringAny("vip_token").ifBlank { auth.vipToken },
+            ))
+            RefreshResult.OK
+        } catch (e: ApiException) {
+            code = e.code
+            // requestBlocking 只在 status 0（业务拒绝）时抛带业务码的 ApiException；HTTP 错误码 >= 400 算网络问题
+            if (e.code in 1 until 400 || e.code >= 600) RefreshResult.EXPIRED else RefreshResult.FAILED
+        } catch (e: Exception) {
+            Log.w(TAG, "refresh failed: ${e.message}")
+            RefreshResult.FAILED
+        }
+        Log.i(TAG, "refresh result=$result code=$code")
+        when (result) {
+            RefreshResult.OK -> markLoginFresh()
+            RefreshResult.EXPIRED -> {
+                clearAuthCookies()
+                onSessionExpired?.invoke()
+            }
+            RefreshResult.FAILED -> Unit
+        }
+        result
+    }
+
+    private fun aesHex(value: String, key: String, iv: String): String =
+        Cipher.getInstance("AES/CBC/PKCS5Padding").run {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key.toByteArray(), "AES"), IvParameterSpec(iv.toByteArray()))
+            doFinal(value.toByteArray()).joinToString("") { "%02x".format(it) }
+        }
 
     internal fun storeDfid(value: String) {
         if (value.isBlank()) return

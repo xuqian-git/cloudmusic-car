@@ -28,7 +28,6 @@ object QQMusicApi {
         if (client.isLoggedIn) runCatching { client.cgiAndroid("music.login.LoginServer", "Logout") }
         client.clearAuthCookies()
     }
-    suspend fun refreshLogin() = Unit
 
     suspend fun userAccount(): Profile? {
         val auth = client.credential ?: return null

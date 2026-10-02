@@ -30,7 +30,6 @@ object KuGouMusicApi {
     private val playlists = ConcurrentHashMap<Long, RemotePlaylist>()
 
     suspend fun logout() = KuGouMusicClient.clearAuthCookies()
-    suspend fun refreshLogin() = Unit
 
     suspend fun userAccount(): Profile? {
         val auth = KuGouMusicClient.credential ?: return null

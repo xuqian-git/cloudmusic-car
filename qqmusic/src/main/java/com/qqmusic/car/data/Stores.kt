@@ -7,9 +7,11 @@ import com.qqmusic.car.api.QQMusicClient
 import com.qqmusic.car.api.Playlist
 import com.qqmusic.car.api.Profile
 import com.qqmusic.car.api.Track
+import com.qqmusic.car.player.PlayerHub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,17 +63,38 @@ object AccountStore {
 
     fun init() {
         _loggedIn.value = QQMusicClient.isLoggedIn
+        QQMusicClient.onSessionExpired = {
+            scope.launch {
+                clearAccount()
+                PlayerHub.toast("QQ 音乐登录已过期，请重新扫码登录")
+            }
+        }
         if (_loggedIn.value) {
             scope.launch {
-                QQMusicApi.refreshLogin()
+                QQMusicClient.refreshIfDue()
                 refresh()
+            }
+        }
+        // 进程常驻多日：每 10 分钟看一眼是否到期（休眠时 delay 不走，所以取地址前还会再查一次）
+        scope.launch {
+            while (true) {
+                delay(10 * 60 * 1000L)
+                QQMusicClient.refreshIfDue()
             }
         }
     }
 
     fun onLoginSucceeded() {
+        QQMusicClient.markLoginFresh()
         _loggedIn.value = QQMusicClient.isLoggedIn
         scope.launch { refresh() }
+    }
+
+    private fun clearAccount() {
+        _profile.value = null
+        _playlists.value = emptyList()
+        _likedIds.value = emptySet()
+        _loggedIn.value = false
     }
 
     suspend fun refresh() {
@@ -84,10 +107,7 @@ object AccountStore {
     fun logout() {
         scope.launch {
             QQMusicApi.logout()
-            _profile.value = null
-            _playlists.value = emptyList()
-            _likedIds.value = emptySet()
-            _loggedIn.value = false
+            clearAccount()
         }
     }
 

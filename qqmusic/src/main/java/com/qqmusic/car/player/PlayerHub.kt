@@ -238,6 +238,8 @@ object PlayerHub {
             AudioQuality.EXHIGH -> listOf(AudioQuality.EXHIGH, AudioQuality.STANDARD)
             AudioQuality.STANDARD -> listOf(AudioQuality.STANDARD)
         }
+        // 过期 key 取地址不一定报错，可能只是拿不到地址/降试听，所以取地址前补一次到期续签
+        QQMusicClient.refreshIfDueBlocking()
         var quality = candidates.first()
         var result = QQMusicApi.songUrlBlocking(id, quality.level)
         for (fallback in candidates.drop(1)) {
