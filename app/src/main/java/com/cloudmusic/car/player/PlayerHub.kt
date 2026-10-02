@@ -24,6 +24,7 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.cloudmusic.car.api.LyricLine
 import com.cloudmusic.car.api.LyricsParser
@@ -203,7 +204,10 @@ object PlayerHub {
                 }
         }.getOrDefault(false)
         val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
-        player = ExoPlayer.Builder(context)
+        val renderers = DefaultRenderersFactory(context)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableDecoderFallback(true)
+        player = ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolving))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
@@ -265,6 +269,20 @@ object PlayerHub {
         if (EngineLink.isEngine) EngineLink.EngineSide.send(EVENT_TOAST, Bundle().apply { putString("text", message) })
     }
 
+    fun onQualityChanged() {
+        if (!initialized || player.currentMediaItem == null) return
+        val index = player.currentMediaItemIndex
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val resume = player.playWhenReady
+        stopPrefetch()
+        urlCache.clear()
+        player.stop()
+        player.seekTo(index, position)
+        player.prepare()
+        player.playWhenReady = resume
+        Log.i("CloudPlayer", "quality_reload id=${player.currentMediaItem?.mediaId} requested=${Settings.quality.value.level} pos=$position")
+    }
+
     // ---------- 地址解析（运行在加载线程） ----------
 
     private fun resolve(spec: DataSpec): DataSpec {
@@ -289,6 +307,7 @@ object PlayerHub {
             result = NeteaseApi.songUrlBlocking(id, AudioQuality.STANDARD.level)
         }
         val url = result.url ?: throw UnplayableTrackException(id)
+        Log.i("CloudPlayer", "quality_resolved id=$id requested=${requestedQuality.level} selected=${quality.level} server=${result.level} type=${result.type} bitrate=${result.bitrate} trial=${result.isTrial}")
         if (result.isTrial) toast("《${tracks[id]?.name.orEmpty()}》为 VIP 歌曲，当前为试听片段")
         val cacheKey = "song-$id-${quality.level}"
         // 存储快满先删最久没听的；真写不进去时缓存层会自动改走网络，不会跳歌

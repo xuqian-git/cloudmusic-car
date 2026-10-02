@@ -299,10 +299,10 @@ object KuGouMusicApi {
 
     suspend fun songDetails(ids: List<Long>): List<Track> = ids.mapNotNull(tracks::get)
 
-    class SongUrl(val url: String?, val isTrial: Boolean)
+    class SongUrl(val url: String?, val isTrial: Boolean, val quality: String?, val bitrate: Int)
 
     fun songUrlBlocking(id: Long, level: String): SongUrl {
-        val track = tracks[id] ?: return SongUrl(null, false)
+        val track = tracks[id] ?: return SongUrl(null, false, null, -1)
         if (track.songType == 1) return cloudSongUrl(track)
         KuGouMusicClient.ensureDeviceRegisteredBlocking()
         val params = linkedMapOf<String, Any?>(
@@ -317,7 +317,12 @@ object KuGouMusicApi {
         val data = root.optJSONObject("data") ?: root
         val urls = data.optJSONArray("url") ?: root.optJSONArray("url")
         val url = urls?.optString(0)?.takeIf(String::isNotBlank) ?: data.stringAny("play_url", "url").takeIf(String::isNotBlank)
-        return SongUrl(url?.replace("http://", "https://"), data.optInt("is_free_part") == 1 || data.optInt("status") == 2)
+        return SongUrl(
+            url?.replace("http://", "https://"),
+            data.optInt("is_free_part") == 1 || data.optInt("status") == 2,
+            data.optString("quality").ifBlank { null },
+            data.optInt("bitrate", data.optInt("bit_rate", -1)),
+        )
     }
 
     private fun cloudSongUrl(track: Track): SongUrl {
@@ -331,7 +336,7 @@ object KuGouMusicApi {
         val data = root.optJSONObject("data") ?: root
         val url = data.stringAny("url", "play_url").takeIf(String::isNotBlank)
             ?: data.optJSONArray("url")?.optString(0)?.takeIf(String::isNotBlank)
-        return SongUrl(url?.replace("http://", "https://"), false)
+        return SongUrl(url?.replace("http://", "https://"), false, data.optString("quality").ifBlank { null }, data.optInt("bitrate", data.optInt("bit_rate", -1)))
     }
 
     suspend fun lyric(id: Long): List<LyricLine> {

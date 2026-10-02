@@ -3,6 +3,7 @@ package com.qqmusic.car.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.util.Log
 import com.qqmusic.car.link.Codecs
 import com.paopao.music.link.EngineLink
 import com.qqmusic.car.api.QQMusicApi
@@ -41,12 +42,15 @@ object Settings {
     }
 
     fun setQuality(q: AudioQuality) {
+        if (_quality.value == q) return
+        Log.i("QQPlayer", "quality_change level=${q.level} side=${if (EngineLink.isUi) "ui" else "engine"}")
         _quality.value = q
         if (EngineLink.isUi) {
             EngineLink.UiSide.fire(SET_QUALITY, Bundle().apply { putString("level", q.level) })
             return
         }
         prefs.edit().putString("quality", q.level).apply()
+        PlayerHub.onQualityChanged()
     }
 
     private const val MIRROR_QUALITY = "settings.quality"

@@ -41,12 +41,14 @@ object Settings {
     }
 
     fun setQuality(q: AudioQuality) {
+        if (_quality.value == q) return
         _quality.value = q
         if (EngineLink.isUi) {
             EngineLink.UiSide.fire(SET_QUALITY, Bundle().apply { putString("level", q.level) })
             return
         }
         prefs.edit().putString("quality", q.level).apply()
+        PlayerHub.onQualityChanged()
     }
 
     private const val MIRROR_QUALITY = "settings.quality"

@@ -24,6 +24,7 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.qqmusic.car.api.LyricLine
 import com.qqmusic.car.api.LyricsParser
@@ -200,7 +201,16 @@ object PlayerHub {
                 }
         }.getOrDefault(false)
         val resolving = ResolvingDataSource.Factory(cached) { spec -> resolve(spec) }
-        player = ExoPlayer.Builder(context)
+        val bundledFlac = runCatching {
+            Class.forName("androidx.media3.decoder.flac.FlacLibrary")
+                .getMethod("isAvailable")
+                .invoke(null) == true
+        }.onFailure { Log.w("QQPlayer", "bundled_flac_check_failed", it) }.getOrDefault(false)
+        Log.i("QQPlayer", "bundled_flac_available=$bundledFlac")
+        val renderers = DefaultRenderersFactory(context)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableDecoderFallback(true)
+        player = ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolving))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
@@ -219,6 +229,9 @@ object PlayerHub {
         scope.launch {
             while (true) {
                 delay(5_000)
+                if (player.playbackState == Player.STATE_BUFFERING) {
+                    Log.i("QQPlayer", "buffering id=${player.currentMediaItem?.mediaId} quality=${Settings.quality.value.level} pos=${player.currentPosition} buffered=${player.bufferedPosition} totalBuffered=${player.totalBufferedDuration} duration=${player.duration} playWhenReady=${player.playWhenReady} isPlaying=${player.isPlaying} isLoading=${player.isLoading} suppressed=${player.playbackSuppressionReason}")
+                }
                 updatePlaybackProgress()
                 persistPosition()
                 updatePrefetch()
@@ -262,6 +275,21 @@ object PlayerHub {
         if (EngineLink.isEngine) EngineLink.EngineSide.send(EVENT_TOAST, Bundle().apply { putString("text", message) })
     }
 
+    /** Apply a newly selected format to the current song, including one stuck in buffering. */
+    fun onQualityChanged() {
+        if (!initialized || player.currentMediaItem == null) return
+        val index = player.currentMediaItemIndex
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val resume = player.playWhenReady
+        stopPrefetch()
+        urlCache.clear()
+        player.stop()
+        player.seekTo(index, position)
+        player.prepare()
+        player.playWhenReady = resume
+        Log.i("QQPlayer", "quality_reload id=${player.currentMediaItem?.mediaId} quality=${Settings.quality.value.level} pos=$position resume=$resume")
+    }
+
     // ---------- 地址解析（运行在加载线程） ----------
 
     private fun resolve(spec: DataSpec): DataSpec {
@@ -269,8 +297,11 @@ object PlayerHub {
         val id = spec.uri.lastPathSegment?.toLongOrNull() ?: throw IOException("bad uri")
         val requestedQuality = Settings.quality.value
         val requestKey = "$id:${requestedQuality.level}"
+        val startedAt = SystemClock.elapsedRealtime()
+        Log.i("QQPlayer", "resolve_start id=$id quality=${requestedQuality.level}")
         urlCache[requestKey]?.let { cached ->
             if (System.currentTimeMillis() - cached.resolvedAt < URL_TTL_MS) {
+                Log.i("QQPlayer", "resolve_cached id=$id quality=${requestedQuality.level} ms=${SystemClock.elapsedRealtime() - startedAt}")
                 return spec.buildUpon()
                     .setUri(Uri.parse(cached.url))
                     .setKey(cached.cacheKey)
@@ -286,11 +317,19 @@ object PlayerHub {
         // 过期 key 取地址不一定报错，可能只是拿不到地址/降试听，所以取地址前补一次到期续签
         QQMusicClient.refreshIfDueBlocking()
         var quality = candidates.first()
-        var result = QQMusicApi.songUrlBlocking(id, quality.level)
-        for (fallback in candidates.drop(1)) {
-            if (result.url != null) break
-            quality = fallback
-            result = QQMusicApi.songUrlBlocking(id, quality.level)
+        val result = try {
+            var candidate = QQMusicApi.songUrlBlocking(id, quality.level)
+            Log.i("QQPlayer", "vkey id=$id quality=${quality.level} url=${candidate.url != null} trial=${candidate.isTrial} ms=${SystemClock.elapsedRealtime() - startedAt}")
+            for (fallback in candidates.drop(1)) {
+                if (candidate.url != null) break
+                quality = fallback
+                candidate = QQMusicApi.songUrlBlocking(id, quality.level)
+                Log.i("QQPlayer", "vkey id=$id quality=${quality.level} url=${candidate.url != null} trial=${candidate.isTrial} ms=${SystemClock.elapsedRealtime() - startedAt}")
+            }
+            candidate
+        } catch (error: Exception) {
+            Log.w("QQPlayer", "resolve_failed id=$id quality=${quality.level} type=${error.javaClass.simpleName} ms=${SystemClock.elapsedRealtime() - startedAt}", error)
+            throw error
         }
         val url = result.url ?: throw UnplayableTrackException(id)
         if (result.isTrial) toast("《${tracks[id]?.name.orEmpty()}》为 VIP 歌曲，当前为试听片段")
@@ -298,6 +337,7 @@ object PlayerHub {
         // 存储快满先删最久没听的；真写不进去时缓存层会自动改走网络，不会跳歌
         MusicCache.ensureDiskRoom(cacheKey)
         urlCache[requestKey] = ResolvedUrl(url, System.currentTimeMillis(), cacheKey)
+        Log.i("QQPlayer", "resolve_done id=$id requested=${requestedQuality.level} actual=${quality.level} ms=${SystemClock.elapsedRealtime() - startedAt}")
         return spec.buildUpon()
             .setUri(Uri.parse(url))
             .setKey(cacheKey)
@@ -936,6 +976,7 @@ object PlayerHub {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            Log.i("QQPlayer", "state id=${player.currentMediaItem?.mediaId} quality=${Settings.quality.value.level} state=$playbackState pos=${player.currentPosition} buffered=${player.bufferedPosition} playWhenReady=${player.playWhenReady} isPlaying=${player.isPlaying} isLoading=${player.isLoading} suppressed=${player.playbackSuppressionReason}")
             _isBuffering.value = player.playWhenReady && playbackState == Player.STATE_BUFFERING
             publishPosition()
             updatePrefetch()

@@ -141,7 +141,7 @@ object NeteaseApi {
 
     // ---------- 播放 ----------
 
-    class SongUrl(val url: String?, val isTrial: Boolean)
+    class SongUrl(val url: String?, val isTrial: Boolean, val level: String?, val type: String?, val bitrate: Int)
 
     /** 阻塞调用，供播放器的 DataSource 在加载线程里解析真实地址。 */
     fun songUrlBlocking(id: Long, level: String): SongUrl {
@@ -152,6 +152,9 @@ object NeteaseApi {
         return SongUrl(
             url = item?.optStringOrNull("url")?.replace("http://", "https://"),
             isTrial = item?.has("freeTrialInfo") == true && !item.isNull("freeTrialInfo"),
+            level = item?.optStringOrNull("level"),
+            type = item?.optStringOrNull("type"),
+            bitrate = item?.optInt("br", -1) ?: -1,
         )
     }
 
