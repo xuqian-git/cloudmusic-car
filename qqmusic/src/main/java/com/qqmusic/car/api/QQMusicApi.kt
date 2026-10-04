@@ -196,7 +196,8 @@ object QQMusicApi {
         val (prefix, extension) = qqFileFormat(level)
         val filename = "$prefix${track.mediaMid}$extension"
         val auth = client.credential
-        val data = client.cgiBlocking(
+        // 登录/续签拿到的是安卓 App 身份的 musickey，取地址也得用 App 身份；网页身份会被当游客，只剩免费歌有地址（日志 833）
+        val data = client.cgiAndroidBlocking(
             "music.vkey.GetVkey", "UrlGetVkey",
             JSONObject()
                 .put("uin", auth?.musicId?.toString().orEmpty())
@@ -208,6 +209,9 @@ object QQMusicApi {
         )
         val info = data.optJSONArray("midurlinfo")?.optJSONObject(0)
         val purl = info?.optString("purl").orEmpty()
+        if (purl.isBlank()) {
+            Log.i("QQPlayer", "vkey_empty id=$id level=$level result=${info?.optInt("result")} errtype=${info?.optString("errtype")} uiAlert=${info?.optInt("uiAlert")} msg=${data.optString("msg")}")
+        }
         val base = data.optJSONArray("sip")?.optString(0).orEmpty().ifBlank { "https://isure.stream.qqmusic.qq.com/" }
         return SongUrl(purl.takeIf(String::isNotBlank)?.let { base.replace("http://", "https://") + it }, info?.optString("opi30surl").orEmpty().isNotBlank())
     }
